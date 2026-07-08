@@ -2,5 +2,8 @@
 **/*.rs.bk
 Cargo.lock
 bin/
+dist/
+examples/vite/dist/
+node_modules/
 pkg/
 wasm-pack.log

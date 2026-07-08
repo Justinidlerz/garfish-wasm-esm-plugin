@@ -1,8 +1,8 @@
 [package]
-name = "garfish-es-module-plugin"
+name = "garfish-wasm-esm-plugin"
 version = "0.1.0"
 authors = ["Justinidlerz <zqc.sunny@gmail.com>"]
-edition = "2018"
+edition = "2024"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
@@ -12,6 +12,14 @@ default = ["console_error_panic_hook"]
 
 [dependencies]
 wasm-bindgen = "0.2.84"
+oxc_allocator = "0.139.0"
+oxc_ast = "0.139.0"
+oxc_ast_visit = "0.139.0"
+oxc_parser = "0.139.0"
+oxc_span = "0.139.0"
+serde = { version = "1.0", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+unicode-ident = "1.0"
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires

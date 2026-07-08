@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Garfish WASM ESM Plugin Example</title>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="toolbar" aria-label="Garfish controls">
+        <div>
+          <h1>Garfish ESM Runtime</h1>
+          <p id="status">Idle</p>
+        </div>
+        <div class="actions">
+          <button id="load-app" type="button">Load</button>
+          <button id="unmount-app" type="button" disabled>Unmount</button>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Example workspace">
+        <div id="subapp-container" class="subapp-container"></div>
+        <aside class="metrics">
+          <h2>Runtime Metrics</h2>
+          <ol id="metrics-log"></ol>
+        </aside>
+      </section>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
