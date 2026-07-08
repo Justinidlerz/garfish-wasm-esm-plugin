@@ -20,7 +20,8 @@ import {
 } from './wasm';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
 
-const TRANSFORMER_VERSION = 'garfish-wasm-esm-plugin@0.1.0:oxc-wasm';
+const PACKAGE_VERSION = '__PACKAGE_VERSION__';
+const TRANSFORMER_VERSION = `garfish-wasm-esm-plugin@${PACKAGE_VERSION}:oxc-wasm`;
 const MAX_CONCURRENT_LOADS = 24;
 
 const GARFISH_IMPORT = '__GARFISH_IMPORT__';

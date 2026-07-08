@@ -4,6 +4,14 @@
   "description": "Garfish ES module runtime plugin backed by an OXC WebAssembly transformer.",
   "type": "module",
   "sideEffects": false,
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Justinidlerz/garfish-wasm-esm-plugin.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Justinidlerz/garfish-wasm-esm-plugin/issues"
+  },
+  "homepage": "https://github.com/Justinidlerz/garfish-wasm-esm-plugin#readme",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,18 +25,29 @@
   },
   "files": [
     "dist",
-    "pkg",
+    "pkg/garfish_wasm_esm_plugin.d.ts",
+    "pkg/garfish_wasm_esm_plugin.js",
+    "pkg/garfish_wasm_esm_plugin_bg.wasm",
+    "pkg/garfish_wasm_esm_plugin_bg.wasm.d.ts",
     "README.md",
     "LICENSE-MIT",
     "LICENSE-APACHE"
   ],
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/",
+    "provenance": true
+  },
   "scripts": {
     "build": "pnpm run build:wasm && pnpm run build:js",
     "build:wasm": "wasm-pack build --target web --out-dir pkg",
     "build:js": "rollup -c",
+    "changeset": "changeset",
     "example:build": "pnpm run build:wasm && vite build --config examples/vite/vite.config.ts",
     "example:dev": "pnpm run build:wasm && vite --config examples/vite/vite.config.ts",
     "example:preview": "vite preview --config examples/vite/vite.config.ts",
+    "publish:beta": "pnpm run build && pnpm publish --tag beta --no-git-checks",
+    "release": "pnpm run build && changeset publish",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"
   },
   "dependencies": {
@@ -40,6 +59,7 @@
     "garfish": "^1.19.8"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.31.0",
     "@garfish/core": "1.19.8",
     "@rollup/plugin-typescript": "^12.1.2",
     "rollup": "^4.46.2",

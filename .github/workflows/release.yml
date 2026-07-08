@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+  id-token: write
+  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: true
+
+jobs:
+  pr-beta:
+    name: Publish PR beta
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check changeset release
+        id: changeset
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" --depth=1
+          if pnpm exec changeset status --since "origin/${BASE_REF}" --output "$RUNNER_TEMP/changeset-status.json"; then
+            node scripts/changeset-has-release.mjs "$RUNNER_TEMP/changeset-status.json"
+          else
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable changeset found for this package."
+          fi
+
+      - name: Version package for beta
+        id: beta
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          export BETA_DATE="$(date -u +%Y%m%d%H%M%S)"
+          pnpm exec changeset version
+          node scripts/apply-pr-beta-version.mjs
+
+      - name: Configure npm auth
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$HOME/.npmrc"
+
+      - name: Publish beta package
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm run publish:beta
+
+  release:
+    name: Publish release
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust wasm target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check changeset release
+        id: changeset
+        run: |
+          if pnpm exec changeset status --output "$RUNNER_TEMP/changeset-status.json"; then
+            node scripts/changeset-has-release.mjs "$RUNNER_TEMP/changeset-status.json"
+          else
+            echo "has_release=false" >> "$GITHUB_OUTPUT"
+            echo "No releasable changeset found for this package."
+          fi
+
+      - name: Version package
+        if: steps.changeset.outputs.has_release == 'true'
+        run: pnpm exec changeset version
+
+      - name: Commit release metadata
+        if: steps.changeset.outputs.has_release == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A .changeset package.json pnpm-lock.yaml
+          if [ -f CHANGELOG.md ]; then
+            git add CHANGELOG.md
+          fi
+          git commit -m "Version packages"
+
+      - name: Build package
+        if: steps.changeset.outputs.has_release == 'true'
+        run: pnpm run build
+
+      - name: Configure npm auth
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN"
+          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$HOME/.npmrc"
+
+      - name: Publish package
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: pnpm exec changeset publish
+
+      - name: Push release commit and tags
+        if: steps.changeset.outputs.has_release == 'true'
+        run: git push origin HEAD:master --follow-tags
