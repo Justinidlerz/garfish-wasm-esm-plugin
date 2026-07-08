@@ -3,6 +3,7 @@
 Cargo.lock
 bin/
 dist/
+coverage/
 examples/vite/dist/
 node_modules/
 pkg/

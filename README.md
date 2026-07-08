@@ -1,5 +1,7 @@
 # garfish-wasm-esm-plugin
 
+![Coverage](./badges/coverage.svg)
+
 Garfish plugin for running `<script type="module">` resources through a browser
 WebAssembly transformer. The wasm core uses OXC to parse ESM syntax and rewrites
 imports/exports into the Garfish runtime helpers.
@@ -21,6 +23,82 @@ The plugin only handles scripts that Garfish already marks as module scripts.
 For Vite-style sub applications, keep using an HTML entry with
 `<script type="module">`.
 
+## Supported Resolution
+
+This version supports both HTML import maps and Garfish externals at runtime.
+
+HTML import maps are read from the sub application's HTML entry:
+
+```html
+<script type="importmap">
+{
+  "imports": {
+    "@scope/shared": "https://cdn.example.com/shared/index.js"
+  }
+}
+</script>
+```
+
+Bare imports that are not provided by Garfish externals are resolved with
+`@jspm/import-map` against the current module URL.
+
+Garfish externals are read from `Garfish.externals` and can be imported by exact
+module id or by subpath when the external key is a package root:
+
+```ts
+import React from 'react';
+import ReactDOM from 'react-dom/client';
+import Garfish from 'garfish';
+import { GarfishEsModule } from 'garfish-wasm-esm-plugin';
+
+Garfish.externals = {
+  react: React,
+  'react-dom': ReactDOM,
+};
+
+Garfish.run({
+  plugins: [
+    GarfishEsModule({
+      garfishExternals: ['react', 'react-dom'],
+    }),
+  ],
+});
+```
+
+Runtime-generated namespace modules stay live: exported getters read the current
+value from the backing module object instead of capturing an initial snapshot.
+
+## Wasm Size
+
+The generated transformer artifact is
+`pkg/garfish_wasm_esm_plugin_bg.wasm`.
+
+| Artifact | Size |
+| --- | ---: |
+| Raw wasm | 857,617 bytes (837.5 KiB) |
+| Gzip | 326,597 bytes (318.9 KiB) |
+
+The size comes from bundling OXC parser and semantic analysis into the browser
+runtime. The semantic pass is intentional because imported bindings need symbol
+aware rewriting to preserve ESM live binding behavior after the code is lowered
+to Garfish runtime helpers.
+
+## Why This Plugin Exists
+
+Garfish already knows when an HTML entry contains `<script type="module">`, but
+the module graph still needs browser-runtime compilation before it can run
+inside Garfish's sandboxed execution model. A build-time transform is not enough
+for dynamically loaded sub applications because the host may only see the module
+source after Garfish has fetched the HTML entry and its scripts.
+
+This package keeps that work in a Garfish plugin boundary:
+
+- wasm runs in the browser and parses the fetched module source on demand;
+- OXC AST and semantic data are used instead of regex or text-only rewriting;
+- imports, exports, `import.meta`, dynamic `import()`, import maps, and Garfish
+  externals are handled by the same runtime;
+- live bindings survive the CommonJS-like helper lowering used by the plugin.
+
 ## Build
 
 ```sh
@@ -30,6 +108,38 @@ pnpm build
 
 `pnpm build` first runs `wasm-pack build --target web --out-dir pkg`, then builds
 the TypeScript Garfish wrapper into `dist`.
+
+## Test
+
+```sh
+pnpm test
+pnpm test:coverage
+```
+
+`pnpm test` builds the wasm transformer and runs Vitest in Node. Coverage writes
+`coverage/coverage-summary.json` and refreshes `badges/coverage.svg`.
+
+## Benchmark
+
+```sh
+pnpm benchmark
+pnpm benchmark:update-readme
+```
+
+`pnpm benchmark` measures the wasm transform path against fixed ESM fixtures.
+`pnpm benchmark:update-readme` refreshes the table below.
+
+<!-- benchmark-results:start -->
+
+| Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `small-live-bindings` | 255 | 0.011 ms | 0.011 ms | 0.016 ms | 90,832 ops/sec | 89,147 |
+| `medium-dashboard` | 1,247 | 0.064 ms | 0.064 ms | 0.098 ms | 15,734 ops/sec | 15,560 |
+| `large-re-export` | 5,314 | 0.250 ms | 0.251 ms | 0.371 ms | 4,025 ops/sec | 3,999 |
+
+Measured on Node v22.23.1 with `BENCH_TIME_MS=1000` and `BENCH_WARMUP_MS=250`.
+
+<!-- benchmark-results:end -->
 
 ## Vite Example
 

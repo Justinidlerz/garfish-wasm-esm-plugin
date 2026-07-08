@@ -75,6 +75,16 @@ const toMemoryModule = (value: unknown): MemoryModule => {
   return { default: value };
 };
 
+const preserveOpaqueOption = <Key extends keyof RuntimeOptions>(
+  target: RuntimeOptions,
+  source: RuntimeOptions,
+  key: Key,
+) => {
+  if (source[key] !== undefined) {
+    Object.assign(target, { [key]: source[key] });
+  }
+};
+
 export interface RuntimeCompileMetric {
   storeId: string;
   realUrl: string;
@@ -194,6 +204,16 @@ export class Runtime {
     this.options = isPlainObject(options)
       ? deepMerge(defaultOptions, options)
       : defaultOptions;
+    if (isPlainObject(options)) {
+      preserveOpaqueOption(this.options, options, 'compileCache');
+      preserveOpaqueOption(this.options, options, 'execCode');
+      preserveOpaqueOption(this.options, options, 'garfishExternalMatcher');
+      preserveOpaqueOption(this.options, options, 'garfishExternals');
+      preserveOpaqueOption(this.options, options, 'importMaps');
+      preserveOpaqueOption(this.options, options, 'importMapUrl');
+      preserveOpaqueOption(this.options, options, 'metrics');
+      preserveOpaqueOption(this.options, options, 'wasm');
+    }
     this.loader = new Loader(this.options.loaderOptions);
   }
 

@@ -16,9 +16,24 @@ export interface WasmTransformResult {
 
 let initPromise: Promise<void> | undefined;
 
+function normalizeWasmInitInput(input?: WasmInitInput): WasmInitInput | undefined {
+  if (
+    input === undefined ||
+    (typeof input === 'object' &&
+      input !== null &&
+      Object.prototype.hasOwnProperty.call(input, 'module_or_path'))
+  ) {
+    return input;
+  }
+
+  return { module_or_path: input } as WasmInitInput;
+}
+
 export function initGarfishEsModuleWasm(input?: WasmInitInput) {
   if (!initPromise) {
-    initPromise = Promise.resolve(initWasm(input)).then(() => undefined);
+    initPromise = Promise.resolve(initWasm(normalizeWasmInitInput(input))).then(
+      () => undefined,
+    );
   }
   return initPromise;
 }
