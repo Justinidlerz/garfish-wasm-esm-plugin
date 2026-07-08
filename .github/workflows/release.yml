@@ -13,8 +13,9 @@ on:
 
 permissions:
   contents: write
+  issues: write
   id-token: write
-  pull-requests: read
+  pull-requests: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
@@ -26,7 +27,11 @@ env:
 jobs:
   pr-beta:
     name: Publish PR beta
-    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.user.login == (vars.NPM_RELEASE_USER || 'Justinidlerz') &&
+      github.triggering_actor == (vars.NPM_RELEASE_USER || 'Justinidlerz')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR head
@@ -90,9 +95,25 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm run publish:beta
 
+      - name: Comment beta release on PR
+        if: steps.changeset.outputs.has_release == 'true'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PACKAGE_NAME: ${{ steps.changeset.outputs.package_name }}
+          BETA_VERSION: ${{ steps.beta.outputs.beta_version }}
+          NPM_TAG: beta
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/comment-pr-beta-release.mjs
+
   release:
     name: Publish release
-    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/master' &&
+      github.actor == (vars.NPM_RELEASE_USER || 'Justinidlerz')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
