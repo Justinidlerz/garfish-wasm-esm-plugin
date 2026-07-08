@@ -111,6 +111,11 @@ export interface ModuleResource {
   exports: string[];
 }
 
+export type RuntimeExecCode = (
+  output: ModuleResource,
+  provider: Record<string, unknown>,
+) => void;
+
 interface ModuleLoadRecord {
   storeId: string;
   requestUrl: string;
@@ -139,10 +144,7 @@ export interface RuntimeOptions {
   wasm?: WasmInitInput;
   garfishExternals?: Record<string, unknown>;
   garfishExternalMatcher?: RuntimeExternalMatcher;
-  execCode?: (
-    output: ModuleResource,
-    provider: ReturnType<Runtime['generateProvider']>,
-  ) => void;
+  execCode?: RuntimeExecCode;
 }
 
 class MapRuntimeCompileCache implements RuntimeCompileCache {
@@ -186,6 +188,7 @@ export class Runtime {
   private modules = new WeakMap<MemoryModule, Module>();
   private importMap?: ImportMap;
   private memoryModules: Record<string, MemoryModule> = {};
+  private codeImportRegistry: Record<string, Promise<MemoryModule>> = {};
   private loadRegistry: Record<string, ModuleLoadRecord> = {};
   private activeLoads = 0;
   private loadQueue: Array<() => void> = [];
@@ -255,11 +258,16 @@ export class Runtime {
     return [TRANSFORMER_VERSION, realUrl, storeId, hashText(code)].join('\n');
   }
 
-  private execCode(output: ModuleResource, memoryModule: MemoryModule) {
-    const provider = this.generateProvider(output, memoryModule);
+  private execCode(
+    output: ModuleResource,
+    memoryModule: MemoryModule,
+    execCode?: RuntimeExecCode,
+  ) {
+    const provider = this.generateProvider(output, memoryModule, execCode);
+    const executor = execCode || this.options.execCode;
 
-    if (this.options.execCode) {
-      this.options.execCode(output, provider);
+    if (executor) {
+      executor(output, provider);
     } else {
       const evalStart = now();
       evalWithEnv(`\n${output.code}\n//${output.storeId}\n`, provider, undefined, true);
@@ -276,17 +284,21 @@ export class Runtime {
   private importModule(
     storeId: string,
     requestUrl?: string,
+    execCode?: RuntimeExecCode,
   ): MemoryModule | Promise<MemoryModule> {
     let memoryModule = this.memoryModules[storeId];
     if (!memoryModule) {
       const get = () => {
+        memoryModule = this.memoryModules[storeId];
+        if (memoryModule) return memoryModule;
+
         const output = this.resources[storeId];
         if (!output) {
           throw new Error(`Module '${storeId}' not found`);
         }
         memoryModule = this.memoryModules[storeId] = {};
         try {
-          this.execCode(output, memoryModule);
+          this.execCode(output, memoryModule, execCode);
         } catch (error) {
           delete this.memoryModules[storeId];
           delete this.resources[storeId];
@@ -311,7 +323,11 @@ export class Runtime {
     return this.modules.get(memoryModule);
   }
 
-  private generateProvider(output: ModuleResource, memoryModule: MemoryModule) {
+  private generateProvider(
+    output: ModuleResource,
+    memoryModule: MemoryModule,
+    execCode?: RuntimeExecCode,
+  ) {
     return {
       [GARFISH_IMPORT_META]: createImportMeta(output.realUrl),
 
@@ -329,7 +345,7 @@ export class Runtime {
           return this.getExternalModule(moduleId);
         }
         const storeId = this.resolveModuleUrl(output.storeId, moduleId);
-        return this.import(storeId);
+        return this.importModule(storeId, undefined, execCode);
       },
 
       [GARFISH_DYNAMIC_IMPORT]: (moduleId: string) => {
@@ -339,7 +355,7 @@ export class Runtime {
         this.ensureImportMapForModule(moduleId);
         const storeId = this.resolveModuleUrl(output.storeId, moduleId);
         const requestUrl = this.resolveModuleUrl(output.realUrl, moduleId);
-        return this.importByUrl(storeId, requestUrl);
+        return this.importByUrl(storeId, requestUrl, execCode);
       },
 
       [GARFISH_EXPORT]: (exportObject: Record<string, () => any>) => {
@@ -624,19 +640,61 @@ export class Runtime {
     return this.importModule(storeId) as MemoryModule;
   }
 
-  importByUrl(storeId: string, requestUrl?: string) {
-    const result = this.importModule(storeId, requestUrl || storeId);
+  importByUrl(
+    storeId: string,
+    requestUrl?: string,
+    execCode?: RuntimeExecCode,
+  ) {
+    const result = this.importModule(storeId, requestUrl || storeId, execCode);
     return Promise.resolve(result).then((memoryModule) => {
       return this.getModule(memoryModule);
     });
   }
 
-  async importByCode(code: string, storeId: string, metaUrl?: string) {
+  async importByCode(
+    code: string,
+    storeId: string,
+    metaUrl?: string,
+    execCode?: RuntimeExecCode,
+  ) {
+    const existingModule = this.memoryModules[storeId];
+    if (existingModule) {
+      return this.getModule(existingModule);
+    }
+    const inFlightModule = this.codeImportRegistry[storeId];
+    if (inFlightModule) {
+      const memoryModule = await inFlightModule;
+      return this.getModule(memoryModule);
+    }
+
     if (!metaUrl) metaUrl = storeId;
-    const memoryModule = {};
-    const output = await this.analysisModule(code, storeId, metaUrl);
-    this.resources[storeId] = output;
-    this.execCode(output, memoryModule);
+    const modulePromise = (async () => {
+      const output = await this.analysisModule(code, storeId, metaUrl);
+      const loadedModule = this.memoryModules[storeId];
+      if (loadedModule) return loadedModule;
+
+      const memoryModule = {};
+      this.resources[storeId] = output;
+      this.memoryModules[storeId] = memoryModule;
+
+      try {
+        this.execCode(output, memoryModule, execCode);
+      } catch (error) {
+        delete this.memoryModules[storeId];
+        delete this.resources[storeId];
+        delete this.loadRegistry[storeId];
+        throw error;
+      }
+
+      return memoryModule;
+    })();
+
+    this.codeImportRegistry[storeId] = modulePromise;
+    const memoryModule = await modulePromise.finally(() => {
+      if (this.codeImportRegistry[storeId] === modulePromise) {
+        delete this.codeImportRegistry[storeId];
+      }
+    });
     return this.getModule(memoryModule);
   }
 }

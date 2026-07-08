@@ -12,7 +12,7 @@ use oxc_ast::ast::{
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{ParseOptions, Parser};
 use oxc_semantic::{Semantic, SemanticBuilder, SymbolId};
-use oxc_span::{SourceType, Span};
+use oxc_span::{GetSpan, SourceType, Span};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
@@ -25,13 +25,13 @@ const GARFISH_DYNAMIC_IMPORT: &str = "__GARFISH_DYNAMIC_IMPORT__";
 const GARFISH_DEFAULT_IMPORT: &str = "__GARFISH_DEFAULT_IMPORT__";
 const GARFISH_EXPORT_STAR: &str = "__GARFISH_EXPORT_STAR__";
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ImportInfo {
     module_id: String,
 }
 
-#[derive(Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct TransformResult {
     code: String,
@@ -76,6 +76,12 @@ pub fn start() {
 pub fn transform(source: &str, filename: &str) -> Result<JsValue, JsValue> {
     utils::set_panic_hook();
 
+    let result =
+        transform_to_result(source, filename).map_err(|error| JsValue::from_str(&error))?;
+    serde_wasm_bindgen::to_value(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+}
+
+fn transform_to_result(source: &str, filename: &str) -> Result<TransformResult, String> {
     let allocator = Allocator::default();
     let source_type = source_type_for(filename);
     let parsed = Parser::new(&allocator, source, source_type)
@@ -92,17 +98,14 @@ pub fn transform(source: &str, filename: &str) -> Result<JsValue, JsValue> {
             .map(|diagnostic| format!("{diagnostic:?}"))
             .collect::<Vec<_>>()
             .join("\n");
-        return Err(JsValue::from_str(&format!(
-            "Failed to parse {filename}: {message}",
-        )));
+        return Err(format!("Failed to parse {filename}: {message}"));
     }
 
     let semantic = SemanticBuilder::new()
         .with_build_nodes(true)
         .build(&parsed.program)
         .semantic;
-    let result = Transformer::new(source, filename, &semantic).transform(&parsed.program)?;
-    serde_wasm_bindgen::to_value(&result).map_err(|error| JsValue::from_str(&error.to_string()))
+    Transformer::new(source, filename, &semantic).transform(&parsed.program)
 }
 
 impl<'a> Transformer<'a> {
@@ -121,7 +124,7 @@ impl<'a> Transformer<'a> {
         }
     }
 
-    fn transform(mut self, program: &Program<'a>) -> Result<TransformResult, JsValue> {
+    fn transform(mut self, program: &Program<'a>) -> Result<TransformResult, String> {
         for statement in &program.body {
             self.transform_statement(statement)?;
         }
@@ -142,7 +145,7 @@ impl<'a> Transformer<'a> {
         }
 
         let code = apply_replacements(self.source, &self.replacements)
-            .map_err(|message| JsValue::from_str(&format!("{} ({})", message, self.filename)))?;
+            .map_err(|message| format!("{} ({})", message, self.filename))?;
         let (export_code, exports) = self.generate_export_code();
 
         Ok(TransformResult {
@@ -152,7 +155,7 @@ impl<'a> Transformer<'a> {
         })
     }
 
-    fn transform_statement(&mut self, statement: &Statement<'a>) -> Result<(), JsValue> {
+    fn transform_statement(&mut self, statement: &Statement<'a>) -> Result<(), String> {
         match statement {
             Statement::ImportDeclaration(declaration) => {
                 self.transform_import_declaration(declaration);
@@ -194,8 +197,10 @@ impl<'a> Transformer<'a> {
                         if let Some(symbol_id) = binding.symbol_id {
                             self.import_live_bindings
                                 .insert(symbol_id, binding.live_expression.clone());
-                            self.import_live_bindings_by_name
-                                .insert(binding.local_name.clone(), binding.live_expression.clone());
+                            self.import_live_bindings_by_name.insert(
+                                binding.local_name.clone(),
+                                binding.live_expression.clone(),
+                            );
                         }
                         lines.push(binding.declaration_code);
                     } else {
@@ -214,7 +219,7 @@ impl<'a> Transformer<'a> {
     fn transform_export_named_declaration(
         &mut self,
         declaration: &ExportNamedDeclaration<'a>,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), String> {
         if let Some(source) = &declaration.source {
             let module_id = source.value.to_string();
             self.imports.push(ImportInfo {
@@ -246,14 +251,7 @@ impl<'a> Transformer<'a> {
             for name in names {
                 self.add_export(name.clone(), name);
             }
-            self.replacements.push(Replacement {
-                start: declaration.span.start as usize,
-                end: skip_space_and_comments(
-                    self.source,
-                    declaration.span.start as usize + "export".len(),
-                ),
-                text: String::new(),
-            });
+            self.add_prefix_replacement(declaration.span, declaration_node.span(), String::new());
             return Ok(());
         }
 
@@ -299,34 +297,28 @@ impl<'a> Transformer<'a> {
     fn transform_export_default_declaration(
         &mut self,
         declaration: &ExportDefaultDeclaration<'a>,
-    ) -> Result<(), JsValue> {
-        let after_export = skip_space_and_comments(
-            self.source,
-            declaration.span.start as usize + "export".len(),
-        );
-        let after_default = skip_space_and_comments(self.source, after_export + "default".len());
-
+    ) -> Result<(), String> {
         match &declaration.declaration {
             ExportDefaultDeclarationKind::FunctionDeclaration(function) => {
                 self.transform_default_function_or_class(
                     declaration.span,
-                    after_default,
+                    function.span,
                     function.id.as_ref(),
                 )?;
             }
             ExportDefaultDeclarationKind::ClassDeclaration(class) => {
                 self.transform_default_function_or_class(
                     declaration.span,
-                    after_default,
+                    class.span,
                     class.id.as_ref(),
                 )?;
             }
             _ => {
-                self.replacements.push(Replacement {
-                    start: declaration.span.start as usize,
-                    end: after_default,
-                    text: format!("const {GARFISH_DEFAULT} = "),
-                });
+                self.add_prefix_replacement(
+                    declaration.span,
+                    declaration.declaration.span(),
+                    format!("const {GARFISH_DEFAULT} = "),
+                );
                 self.add_export("default".to_string(), GARFISH_DEFAULT.to_string());
             }
         }
@@ -337,23 +329,19 @@ impl<'a> Transformer<'a> {
     fn transform_default_function_or_class(
         &mut self,
         span: Span,
-        after_default: usize,
+        declaration_span: Span,
         id: Option<&oxc_ast::ast::BindingIdentifier<'a>>,
-    ) -> Result<(), JsValue> {
+    ) -> Result<(), String> {
         if let Some(id) = id {
             let name = id.name.to_string();
-            self.replacements.push(Replacement {
-                start: span.start as usize,
-                end: after_default,
-                text: String::new(),
-            });
+            self.add_prefix_replacement(span, declaration_span, String::new());
             self.add_export("default".to_string(), name);
         } else {
-            self.replacements.push(Replacement {
-                start: span.start as usize,
-                end: after_default,
-                text: format!("const {GARFISH_DEFAULT} = "),
-            });
+            self.add_prefix_replacement(
+                span,
+                declaration_span,
+                format!("const {GARFISH_DEFAULT} = "),
+            );
             self.add_export("default".to_string(), GARFISH_DEFAULT.to_string());
         }
         Ok(())
@@ -366,10 +354,17 @@ impl<'a> Transformer<'a> {
     }
 
     fn add_statement_replacement(&mut self, span: Span, text: String) {
-        let end = include_trailing_semicolon(self.source, span.end as usize);
         self.replacements.push(Replacement {
             start: span.start as usize,
-            end,
+            end: span.end as usize,
+            text,
+        });
+    }
+
+    fn add_prefix_replacement(&mut self, outer_span: Span, inner_span: Span, text: String) {
+        self.replacements.push(Replacement {
+            start: outer_span.start as usize,
+            end: inner_span.start as usize,
             text,
         });
     }
@@ -399,7 +394,6 @@ impl<'a> Transformer<'a> {
             .collect::<Vec<_>>();
 
         let mut shorthand_collector = ImportShorthandCollector {
-            source: self.source,
             semantic: self.semantic,
             import_live_bindings: &self.import_live_bindings,
             replacements: Vec::new(),
@@ -505,7 +499,6 @@ impl<'a> Visit<'a> for ExpressionCollector {
 }
 
 struct ImportShorthandCollector<'s, 'a> {
-    source: &'a str,
     semantic: &'s Semantic<'a>,
     import_live_bindings: &'s BTreeMap<SymbolId, String>,
     replacements: Vec<Replacement>,
@@ -523,7 +516,7 @@ impl<'a> Visit<'a> for ImportShorthandCollector<'_, 'a> {
                             if let Some(expression) = self.import_live_bindings.get(&symbol_id) {
                                 let start = property.span.start as usize;
                                 let end = property.span.end as usize;
-                                let key = self.source[start..end].trim();
+                                let key = identifier.name.as_str();
                                 self.replacements.push(Replacement {
                                     start,
                                     end,
@@ -591,7 +584,10 @@ fn import_namespace_binding_code(
 ) -> String {
     match specifier {
         ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => {
-            format!("const {} = {GARFISH_NAMESPACE}({module_name});", specifier.local.name)
+            format!(
+                "const {} = {GARFISH_NAMESPACE}({module_name});",
+                specifier.local.name
+            )
         }
         _ => unreachable!("non-namespace import bindings are handled by import_binding"),
     }
@@ -694,42 +690,6 @@ fn dedupe_imports(imports: Vec<ImportInfo>) -> Vec<ImportInfo> {
         .collect()
 }
 
-fn include_trailing_semicolon(source: &str, end: usize) -> usize {
-    if source.as_bytes().get(end) == Some(&b';') {
-        end + 1
-    } else {
-        end
-    }
-}
-
-fn skip_space_and_comments(source: &str, start: usize) -> usize {
-    let bytes = source.as_bytes();
-    let mut index = start;
-    while index < bytes.len() {
-        if bytes[index].is_ascii_whitespace() {
-            index += 1;
-            continue;
-        }
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'/') {
-            index += 2;
-            while index < bytes.len() && bytes[index] != b'\n' {
-                index += 1;
-            }
-            continue;
-        }
-        if bytes[index] == b'/' && bytes.get(index + 1) == Some(&b'*') {
-            index += 2;
-            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
-                index += 1;
-            }
-            index = (index + 2).min(bytes.len());
-            continue;
-        }
-        break;
-    }
-    index
-}
-
 fn property_access(name: &str) -> String {
     if is_identifier_name(name) {
         format!(".{name}")
@@ -784,4 +744,80 @@ fn json_string_array(values: &[String]) -> String {
             .collect::<Vec<_>>()
             .join(","),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn transform_fixture(source: &str) -> TransformResult {
+        transform_to_result(source, "/fixture.js").expect("transform should succeed")
+    }
+
+    #[test]
+    fn keeps_code_after_no_semicolon_named_export() {
+        let result = transform_fixture("const a = 1;\nexport { a }\nfoo();");
+
+        assert!(result.code.contains("foo();"));
+        assert!(!result.code.contains("export { a }"));
+        assert!(result.code.contains("\"a\": () => a"));
+        assert_eq!(result.exports, vec!["a"]);
+    }
+
+    #[test]
+    fn rewrites_export_declaration_from_ast_spans() {
+        let result = transform_fixture("export /* comment */ const value = 1;\nvalue;");
+
+        assert!(result.code.contains("const value = 1"));
+        assert!(!result.code.contains("export /* comment */"));
+        assert!(result.code.contains("\"value\": () => value"));
+        assert_eq!(result.exports, vec!["value"]);
+    }
+
+    #[test]
+    fn rewrites_default_function_from_ast_spans() {
+        let result =
+            transform_fixture("export /* comment */ default function read() { return 1; }");
+
+        assert!(result.code.contains("function read() { return 1; }"));
+        assert!(!result.code.contains("export /* comment */"));
+        assert!(result.code.contains("\"default\": () => read"));
+        assert_eq!(result.exports, vec!["default"]);
+    }
+
+    #[test]
+    fn rewrites_default_expression_from_ast_spans() {
+        let result = transform_fixture("export /* comment */ default /* value */ 1 + 2;");
+
+        assert!(result.code.contains("const __GARFISH_DEFAULT__ = 1 + 2"));
+        assert!(!result.code.contains("export /* comment */"));
+        assert!(
+            result
+                .code
+                .contains("\"default\": () => __GARFISH_DEFAULT__")
+        );
+        assert_eq!(result.exports, vec!["default"]);
+    }
+
+    #[test]
+    fn rewrites_import_shorthand_from_identifier_ast() {
+        let result = transform_fixture(
+            "import { count } from './dep.js';\nconst obj = { count };\nexport { obj };",
+        );
+
+        assert!(
+            result
+                .code
+                .contains("const obj = { count: (0, __m0__.count) };")
+        );
+        assert!(result.code.contains("\"obj\": () => obj"));
+    }
+
+    #[test]
+    fn reports_parser_errors_with_filename() {
+        let error = transform_to_result("export const broken = }", "/broken.js")
+            .expect_err("parse should fail");
+
+        assert!(error.contains("/broken.js"));
+    }
 }
