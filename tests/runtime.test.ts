@@ -70,4 +70,46 @@ describe('Runtime', () => {
     expect(module.namespaceTag).toBe('[object Module]');
     expect(module.moduleUrl).toBe('https://cdn.example.test/app.js');
   });
+
+  it('matches external prefixes only when the key uses import-map-style trailing slash', async () => {
+    const exactModule = { value: 'exact' };
+    const prefixModule = { value: 'prefix' };
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      garfishExternals: {
+        '@abc/def': exactModule,
+        '@abc/def/': prefixModule,
+      },
+    });
+
+    expect(runtime.isExternalModule('@abc/def')).toBe(true);
+    expect(runtime.isExternalModule('@abc/def/test.js')).toBe(true);
+    expect(runtime.isExternalModule('@abc/defx/test.js')).toBe(false);
+
+    const exactOnlyRuntime = new Runtime({
+      scope: 'test',
+      garfishExternals: {
+        'exact-only': exactModule,
+      },
+    });
+
+    expect(exactOnlyRuntime.isExternalModule('exact-only')).toBe(true);
+    expect(exactOnlyRuntime.isExternalModule('exact-only/subpath.js')).toBe(
+      false,
+    );
+
+    const module = await runtime.importByCode(
+      trimSource(`
+        import { value as exactValue } from '@abc/def';
+        import { value as prefixValue } from '@abc/def/test.js';
+
+        export { exactValue, prefixValue };
+      `),
+      'https://example.test/app.js',
+    );
+
+    expect(module.exactValue).toBe('exact');
+    expect(module.prefixValue).toBe('prefix');
+  });
 });

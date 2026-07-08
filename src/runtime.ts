@@ -61,10 +61,8 @@ const isRelativeModuleId = (moduleId: string) =>
   moduleId.startsWith('../') ||
   (moduleId.startsWith('/') && !moduleId.startsWith('//'));
 
-const isExternalSubpath = (moduleId: string, externalKey: string) => {
-  if (!externalKey || moduleId === externalKey) return false;
-  const boundary = externalKey.endsWith('/') ? externalKey : `${externalKey}/`;
-  return moduleId.startsWith(boundary);
+const isExternalPrefixMatch = (moduleId: string, externalKey: string) => {
+  return externalKey.endsWith('/') && moduleId.startsWith(externalKey);
 };
 
 const isObjectLike = (value: unknown): value is MemoryModule =>
@@ -389,7 +387,7 @@ export class Runtime {
     if (hasOwn(externals, moduleId)) return moduleId;
 
     return this.getExternalKeys()
-      .filter((key) => isExternalSubpath(moduleId, key))
+      .filter((key) => isExternalPrefixMatch(moduleId, key))
       .sort((a, b) => b.length - a.length)[0];
   }
 
@@ -398,12 +396,14 @@ export class Runtime {
     if (!matcher) return false;
     if (Array.isArray(matcher)) {
       return matcher.some(
-        (item) => item === moduleId || isExternalSubpath(moduleId, item),
+        (item) => item === moduleId || isExternalPrefixMatch(moduleId, item),
       );
     }
     if (matcher instanceof Set) {
       if (matcher.has(moduleId)) return true;
-      return [...matcher].some((item) => isExternalSubpath(moduleId, item));
+      return [...matcher].some((item) =>
+        isExternalPrefixMatch(moduleId, item),
+      );
     }
     return matcher(moduleId);
   }

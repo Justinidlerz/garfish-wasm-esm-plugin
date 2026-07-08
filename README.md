@@ -42,28 +42,39 @@ HTML import maps are read from the sub application's HTML entry:
 Bare imports that are not provided by Garfish externals are resolved with
 `@jspm/import-map` against the current module URL.
 
-Garfish externals are read from `Garfish.externals` and can be imported by exact
-module id or by subpath when the external key is a package root:
+Garfish externals are read from `Garfish.externals`. The matching rule follows
+import map semantics:
+
+- keys without a trailing slash match only the exact module id;
+- keys with a trailing slash match that full prefix, so `@abc/def/` externalizes
+  imports such as `@abc/def/test.js`;
+- the longest matching external prefix wins when multiple prefix keys match.
+  Every matching subpath reads from the external module value registered under
+  that prefix key.
 
 ```ts
 import React from 'react';
-import ReactDOM from 'react-dom/client';
+import * as sharedWidgets from '@abc/def';
 import Garfish from 'garfish';
 import { GarfishEsModule } from 'garfish-wasm-esm-plugin';
 
 Garfish.externals = {
   react: React,
-  'react-dom': ReactDOM,
+  '@abc/def/': sharedWidgets,
 };
 
 Garfish.run({
   plugins: [
     GarfishEsModule({
-      garfishExternals: ['react', 'react-dom'],
+      garfishExternals: ['react', '@abc/def/'],
     }),
   ],
 });
 ```
+
+With the config above, `import React from 'react'` is exact-matched, while
+`import { Button } from '@abc/def/button.js'` is treated as external because it
+matches the `@abc/def/` prefix. `@abc/defx/button.js` does not match that prefix.
 
 Runtime-generated namespace modules stay live: exported getters read the current
 value from the backing module object instead of capturing an initial snapshot.
