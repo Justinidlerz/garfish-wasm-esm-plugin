@@ -1,6 +1,6 @@
 {
   "name": "garfish-wasm-esm-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Garfish ES module runtime plugin backed by an OXC WebAssembly transformer.",
   "license": "MIT",
   "type": "module",
