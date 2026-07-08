@@ -1,5 +1,11 @@
 # garfish-wasm-esm-plugin
 
+## 0.1.2
+
+### Patch Changes
+
+- 5352f6c: Preserve runtime wasm and Garfish external option identities, and add Vitest coverage plus transform benchmarks.
+
 ## 0.1.1
 
 ### Patch Changes
