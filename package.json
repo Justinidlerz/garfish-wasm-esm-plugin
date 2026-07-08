@@ -25,7 +25,6 @@
     }
   },
   "files": [
-    "badges/coverage.svg",
     "dist",
     "pkg/garfish_wasm_esm_plugin.d.ts",
     "pkg/garfish_wasm_esm_plugin.js",
@@ -51,10 +50,11 @@
     "publish:beta": "pnpm run build && pnpm publish --tag beta --no-git-checks",
     "release": "pnpm run build && changeset publish",
     "test": "pnpm run build:wasm && vitest run",
-    "test:coverage": "pnpm run build:wasm && vitest run --coverage && node scripts/update-coverage-badge.mjs",
+    "test:coverage": "pnpm run build:wasm && vitest run --coverage",
     "test:watch": "vitest",
     "benchmark": "pnpm run build:wasm && node scripts/benchmark-transform.mjs",
-    "benchmark:update-readme": "pnpm run build:wasm && node scripts/benchmark-transform.mjs --update-readme",
+    "benchmark:update": "pnpm run build:wasm && node scripts/benchmark-transform.mjs --update-readme --output benchmarks/transform.md",
+    "benchmark:update-readme": "pnpm run benchmark:update",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"
   },
   "dependencies": {

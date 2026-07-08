@@ -1,6 +1,6 @@
 # garfish-wasm-esm-plugin
 
-![Coverage](./badges/coverage.svg)
+[![codecov](https://codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin/branch/master/graph/badge.svg)](https://app.codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin)
 
 Garfish plugin for running `<script type="module">` resources through a browser
 WebAssembly transformer. The wasm core uses OXC to parse ESM syntax and rewrites
@@ -127,30 +127,38 @@ pnpm test
 pnpm test:coverage
 ```
 
-`pnpm test` builds the wasm transformer and runs Vitest in Node. Coverage writes
-`coverage/coverage-summary.json` and refreshes `badges/coverage.svg`.
+`pnpm test` builds the wasm transformer and runs Vitest in Node.
+`pnpm test:coverage` writes `coverage/coverage-summary.json` and
+`coverage/lcov.info`; CI uploads that report to Codecov.
+
+On pull requests, GitHub Actions uploads the coverage report with
+`codecov/codecov-action`; Codecov owns the coverage PR comment and status checks.
+The workflow also updates a repository PR comment with Codecov report links and
+the latest benchmark table.
 
 ## Benchmark
 
 ```sh
 pnpm benchmark
-pnpm benchmark:update-readme
+pnpm benchmark:update
 ```
 
 `pnpm benchmark` measures the wasm transform path against fixed ESM fixtures.
-`pnpm benchmark:update-readme` refreshes the table below.
+`pnpm benchmark:update` refreshes both `benchmarks/transform.md` and the table
+below.
 
 <!-- benchmark-results:start -->
 
 | Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `small-live-bindings` | 255 | 0.011 ms | 0.011 ms | 0.016 ms | 90,832 ops/sec | 89,147 |
-| `medium-dashboard` | 1,247 | 0.064 ms | 0.064 ms | 0.098 ms | 15,734 ops/sec | 15,560 |
-| `large-re-export` | 5,314 | 0.250 ms | 0.251 ms | 0.371 ms | 4,025 ops/sec | 3,999 |
+| `small-live-bindings` | 255 | 0.011 ms | 0.011 ms | 0.014 ms | 90,876 ops/sec | 90,215 |
+| `medium-dashboard` | 1,247 | 0.064 ms | 0.063 ms | 0.078 ms | 15,850 ops/sec | 15,707 |
+| `large-re-export` | 5,314 | 0.250 ms | 0.250 ms | 0.348 ms | 4,010 ops/sec | 3,993 |
 
 Measured on Node v22.23.1 with `BENCH_TIME_MS=1000` and `BENCH_WARMUP_MS=250`.
 
 <!-- benchmark-results:end -->
+
 
 ## Vite Example
 

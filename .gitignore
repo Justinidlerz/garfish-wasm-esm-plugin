@@ -5,6 +5,7 @@ bin/
 dist/
 coverage/
 examples/vite/dist/
+log/
 node_modules/
 pkg/
 wasm-pack.log

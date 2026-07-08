@@ -1,5 +1,5 @@
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { Bench } from 'tinybench';
 import initWasm, { transform } from '../pkg/garfish_wasm_esm_plugin.js';
 
@@ -7,6 +7,15 @@ const benchmarkBlockStart = '<!-- benchmark-results:start -->';
 const benchmarkBlockEnd = '<!-- benchmark-results:end -->';
 const benchTimeMs = Number(process.env.BENCH_TIME_MS ?? 1000);
 const benchWarmupMs = Number(process.env.BENCH_WARMUP_MS ?? 250);
+const args = process.argv.slice(2);
+
+function getArgValue(name) {
+  const prefixed = args.find((arg) => arg.startsWith(`${name}=`));
+  if (prefixed) return prefixed.slice(name.length + 1);
+
+  const index = args.indexOf(name);
+  if (index !== -1) return args[index + 1];
+}
 
 function trimSource(source) {
   return `${source.trim()}\n`;
@@ -138,11 +147,19 @@ const markdown = [
   `Measured on Node ${process.version} with \`BENCH_TIME_MS=${benchTimeMs}\` and \`BENCH_WARMUP_MS=${benchWarmupMs}\`.`,
   '',
   benchmarkBlockEnd,
-].join('\n');
+].join('\n') + '\n';
 
 console.log(markdown);
 
-if (process.argv.includes('--update-readme')) {
+const outputPath = getArgValue('--output');
+if (outputPath) {
+  const resolvedOutputPath = resolve(outputPath);
+  mkdirSync(dirname(resolvedOutputPath), { recursive: true });
+  writeFileSync(resolvedOutputPath, markdown);
+  console.log(`Wrote benchmark results to ${outputPath}.`);
+}
+
+if (args.includes('--update-readme')) {
   const readmePath = new URL('../README.md', import.meta.url);
   const readme = readFileSync(readmePath, 'utf8');
   const start = readme.indexOf(benchmarkBlockStart);
