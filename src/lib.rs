@@ -1,6 +1,6 @@
 mod utils;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use oxc_allocator::Allocator;
 use oxc_ast::ast::{
@@ -11,6 +11,7 @@ use oxc_ast::ast::{
 };
 use oxc_ast_visit::{Visit, walk};
 use oxc_parser::{ParseOptions, Parser};
+use oxc_semantic::{Semantic, SemanticBuilder, SymbolId};
 use oxc_span::{SourceType, Span};
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
@@ -56,10 +57,13 @@ struct ExportStarGetter {
 struct Transformer<'a> {
     source: &'a str,
     filename: &'a str,
+    semantic: &'a Semantic<'a>,
     imports: Vec<ImportInfo>,
     replacements: Vec<Replacement>,
     export_getters: Vec<ExportGetter>,
     export_star_getters: Vec<ExportStarGetter>,
+    import_live_bindings: BTreeMap<SymbolId, String>,
+    import_live_bindings_by_name: BTreeMap<String, String>,
     module_count: usize,
 }
 
@@ -93,19 +97,26 @@ pub fn transform(source: &str, filename: &str) -> Result<JsValue, JsValue> {
         )));
     }
 
-    let result = Transformer::new(source, filename).transform(&parsed.program)?;
+    let semantic = SemanticBuilder::new()
+        .with_build_nodes(true)
+        .build(&parsed.program)
+        .semantic;
+    let result = Transformer::new(source, filename, &semantic).transform(&parsed.program)?;
     serde_wasm_bindgen::to_value(&result).map_err(|error| JsValue::from_str(&error.to_string()))
 }
 
 impl<'a> Transformer<'a> {
-    fn new(source: &'a str, filename: &'a str) -> Self {
+    fn new(source: &'a str, filename: &'a str, semantic: &'a Semantic<'a>) -> Self {
         Self {
             source,
             filename,
+            semantic,
             imports: Vec::new(),
             replacements: Vec::new(),
             export_getters: Vec::new(),
             export_star_getters: Vec::new(),
+            import_live_bindings: BTreeMap::new(),
+            import_live_bindings_by_name: BTreeMap::new(),
             module_count: 0,
         }
     }
@@ -114,6 +125,8 @@ impl<'a> Transformer<'a> {
         for statement in &program.body {
             self.transform_statement(statement)?;
         }
+
+        self.transform_import_live_binding_references(program);
 
         let mut expression_collector = ExpressionCollector::default();
         expression_collector.visit_program(program);
@@ -177,7 +190,17 @@ impl<'a> Transformer<'a> {
                 lines.push(format!("{GARFISH_IMPORT}({});", string_literal(&module_id)));
             } else {
                 for specifier in specifiers {
-                    lines.push(import_binding_code(specifier, &module_name));
+                    if let Some(binding) = import_binding(specifier, &module_name) {
+                        if let Some(symbol_id) = binding.symbol_id {
+                            self.import_live_bindings
+                                .insert(symbol_id, binding.live_expression.clone());
+                            self.import_live_bindings_by_name
+                                .insert(binding.local_name.clone(), binding.live_expression.clone());
+                        }
+                        lines.push(binding.declaration_code);
+                    } else {
+                        lines.push(import_namespace_binding_code(specifier, &module_name));
+                    }
                 }
             }
         } else {
@@ -235,9 +258,13 @@ impl<'a> Transformer<'a> {
         }
 
         for specifier in &declaration.specifiers {
+            let local_name = module_export_name(&specifier.local);
             self.add_export(
                 module_export_name(&specifier.exported),
-                module_export_name(&specifier.local),
+                self.import_live_bindings_by_name
+                    .get(&local_name)
+                    .cloned()
+                    .unwrap_or(local_name),
             );
         }
         self.add_statement_replacement(declaration.span, String::new());
@@ -359,6 +386,54 @@ impl<'a> Transformer<'a> {
         self.export_getters.push(ExportGetter { name, expression });
     }
 
+    fn transform_import_live_binding_references(&mut self, program: &Program<'a>) {
+        if self.import_live_bindings.is_empty() {
+            return;
+        }
+
+        let replaced_source_ranges = self
+            .replacements
+            .iter()
+            .filter(|replacement| replacement.start < replacement.end)
+            .map(|replacement| (replacement.start, replacement.end))
+            .collect::<Vec<_>>();
+
+        let mut shorthand_collector = ImportShorthandCollector {
+            source: self.source,
+            semantic: self.semantic,
+            import_live_bindings: &self.import_live_bindings,
+            replacements: Vec::new(),
+            covered_reference_spans: BTreeSet::new(),
+        };
+        shorthand_collector.visit_program(program);
+        let covered_reference_spans = shorthand_collector.covered_reference_spans;
+        self.replacements.extend(shorthand_collector.replacements);
+
+        for (symbol_id, expression) in &self.import_live_bindings {
+            for reference in self.semantic.symbol_references(*symbol_id) {
+                if !reference.is_read() || reference.is_write() {
+                    continue;
+                }
+
+                let span = self.semantic.reference_span(reference);
+                if span_is_inside_ranges(span, &replaced_source_ranges) {
+                    continue;
+                }
+
+                let key = (span.start as usize, span.end as usize);
+                if covered_reference_spans.contains(&key) {
+                    continue;
+                }
+
+                self.replacements.push(Replacement {
+                    start: span.start as usize,
+                    end: span.end as usize,
+                    text: expression.clone(),
+                });
+            }
+        }
+    }
+
     fn generate_export_code(&self) -> (String, Vec<String>) {
         let mut code = String::new();
         let mut exported_names = BTreeSet::new();
@@ -400,6 +475,13 @@ impl<'a> Transformer<'a> {
     }
 }
 
+struct ImportBinding {
+    local_name: String,
+    live_expression: String,
+    declaration_code: String,
+    symbol_id: Option<SymbolId>,
+}
+
 #[derive(Default)]
 struct ExpressionCollector {
     import_meta_spans: Vec<Span>,
@@ -422,6 +504,47 @@ impl<'a> Visit<'a> for ExpressionCollector {
     }
 }
 
+struct ImportShorthandCollector<'s, 'a> {
+    source: &'a str,
+    semantic: &'s Semantic<'a>,
+    import_live_bindings: &'s BTreeMap<SymbolId, String>,
+    replacements: Vec<Replacement>,
+    covered_reference_spans: BTreeSet<(usize, usize)>,
+}
+
+impl<'a> Visit<'a> for ImportShorthandCollector<'_, 'a> {
+    fn visit_object_property(&mut self, property: &oxc_ast::ast::ObjectProperty<'a>) {
+        if property.shorthand {
+            if let oxc_ast::ast::Expression::Identifier(identifier) = &property.value {
+                if let Some(reference_id) = identifier.reference_id.get() {
+                    let reference = self.semantic.scoping().get_reference(reference_id);
+                    if reference.is_read() && !reference.is_write() {
+                        if let Some(symbol_id) = reference.symbol_id() {
+                            if let Some(expression) = self.import_live_bindings.get(&symbol_id) {
+                                let start = property.span.start as usize;
+                                let end = property.span.end as usize;
+                                let key = self.source[start..end].trim();
+                                self.replacements.push(Replacement {
+                                    start,
+                                    end,
+                                    text: format!("{key}: {expression}"),
+                                });
+                                self.covered_reference_spans.insert((
+                                    identifier.span.start as usize,
+                                    identifier.span.end as usize,
+                                ));
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        walk::walk_object_property(self, property);
+    }
+}
+
 fn source_type_for(filename: &str) -> SourceType {
     SourceType::from_path(filename).unwrap_or_else(|_| SourceType::mjs())
 }
@@ -430,21 +553,47 @@ fn module_export_name(name: &ModuleExportName) -> String {
     name.name().to_string()
 }
 
-fn import_binding_code(specifier: &ImportDeclarationSpecifier, module_name: &str) -> String {
+fn import_binding(
+    specifier: &ImportDeclarationSpecifier,
+    module_name: &str,
+) -> Option<ImportBinding> {
     match specifier {
-        ImportDeclarationSpecifier::ImportSpecifier(specifier) => format!(
-            "const {} = {module_name}{};",
-            specifier.local.name,
-            property_access(&module_export_name(&specifier.imported)),
-        ),
-        ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => format!(
-            "const {} = {GARFISH_DEFAULT_IMPORT}({module_name});",
-            specifier.local.name,
-        ),
-        ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => format!(
-            "const {} = {GARFISH_NAMESPACE}({module_name});",
-            specifier.local.name,
-        ),
+        ImportDeclarationSpecifier::ImportSpecifier(specifier) => {
+            let local_name = specifier.local.name.to_string();
+            let live_expression = format!(
+                "(0, {module_name}{})",
+                property_access(&module_export_name(&specifier.imported)),
+            );
+            Some(ImportBinding {
+                declaration_code: format!("const {local_name} = {live_expression};"),
+                local_name,
+                live_expression,
+                symbol_id: specifier.local.symbol_id.get(),
+            })
+        }
+        ImportDeclarationSpecifier::ImportDefaultSpecifier(specifier) => {
+            let local_name = specifier.local.name.to_string();
+            let live_expression = format!("(0, {GARFISH_DEFAULT_IMPORT}({module_name}))");
+            Some(ImportBinding {
+                declaration_code: format!("const {local_name} = {live_expression};"),
+                local_name,
+                live_expression,
+                symbol_id: specifier.local.symbol_id.get(),
+            })
+        }
+        ImportDeclarationSpecifier::ImportNamespaceSpecifier(_) => None,
+    }
+}
+
+fn import_namespace_binding_code(
+    specifier: &ImportDeclarationSpecifier,
+    module_name: &str,
+) -> String {
+    match specifier {
+        ImportDeclarationSpecifier::ImportNamespaceSpecifier(specifier) => {
+            format!("const {} = {GARFISH_NAMESPACE}({module_name});", specifier.local.name)
+        }
+        _ => unreachable!("non-namespace import bindings are handled by import_binding"),
     }
 }
 
@@ -527,6 +676,14 @@ fn apply_replacements(source: &str, replacements: &[Replacement]) -> Result<Stri
     }
 
     Ok(output)
+}
+
+fn span_is_inside_ranges(span: Span, ranges: &[(usize, usize)]) -> bool {
+    let start = span.start as usize;
+    let end = span.end as usize;
+    ranges
+        .iter()
+        .any(|(range_start, range_end)| start >= *range_start && end <= *range_end)
 }
 
 fn dedupe_imports(imports: Vec<ImportInfo>) -> Vec<ImportInfo> {
