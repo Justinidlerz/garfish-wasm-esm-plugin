@@ -2,6 +2,7 @@
 name = "garfish-wasm-esm-plugin"
 version = "0.1.0"
 authors = ["Justinidlerz <zqc.sunny@gmail.com>"]
+license = "MIT"
 edition = "2024"
 
 [lib]
