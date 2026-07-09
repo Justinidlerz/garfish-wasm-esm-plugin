@@ -1,5 +1,12 @@
 # garfish-wasm-esm-plugin
 
+## 0.1.3
+
+### Patch Changes
+
+- db55d5e: Match Garfish external prefixes only when the external key uses import-map-style trailing slash syntax.
+- cf4ba9a: Fix module execution races and make export rewrites rely on OXC AST spans.
+
 ## 0.1.2
 
 ### Patch Changes
