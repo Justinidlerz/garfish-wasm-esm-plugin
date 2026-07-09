@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { evalWithEnv } from '@garfish/utils';
 import { Runtime } from '../src/runtime';
 import { getWasmBytes, trimSource } from './wasm';
 
@@ -111,5 +112,127 @@ describe('Runtime', () => {
 
     expect(module.exactValue).toBe('exact');
     expect(module.prefixValue).toBe('prefix');
+  });
+
+  it('does not poison a store id when importByCode compilation fails', async () => {
+    const storeId = 'https://example.test/retry.js';
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+    });
+
+    await expect(
+      runtime.importByCode('export const broken = }', storeId),
+    ).rejects.toThrow(storeId);
+    await expect(
+      runtime.importByCode('export const broken = }', storeId),
+    ).rejects.toThrow(storeId);
+
+    const module = await runtime.importByCode(
+      'export const ok = 1;',
+      storeId,
+    );
+
+    expect(module.ok).toBe(1);
+  });
+
+  it('deduplicates concurrent importByCode execution for the same store id', async () => {
+    let executions = 0;
+    const storeId = 'https://example.test/inline-singleton.js';
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      execCode(_output, provider) {
+        executions += 1;
+        (provider as any).__GARFISH_EXPORT__({
+          value: () => executions,
+        });
+      },
+    });
+
+    const [first, second] = await Promise.all([
+      runtime.importByCode('export const value = 1;', storeId),
+      runtime.importByCode('export const value = 1;', storeId),
+    ]);
+
+    expect(executions).toBe(1);
+    expect(first).toBe(second);
+    expect(first.value).toBe(1);
+    expect(second.value).toBe(1);
+  });
+
+  it('deduplicates concurrent importByUrl execution for the same store id', async () => {
+    let executions = 0;
+    const storeId = 'https://example.test/lazy.js';
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      execCode(_output, provider) {
+        executions += 1;
+        (provider as any).__GARFISH_EXPORT__({
+          value: () => executions,
+        });
+      },
+    });
+    const load = vi.fn(async ({ url }: { url: string }) => ({
+      resourceManager: {
+        url,
+        scriptCode: 'export const value = 1;',
+      },
+    }));
+    runtime.loader = { load } as any;
+
+    const [first, second] = await Promise.all([
+      runtime.importByUrl(storeId, storeId),
+      runtime.importByUrl(storeId, storeId),
+    ]);
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(executions).toBe(1);
+    expect(first).toBe(second);
+    expect(first.value).toBe(1);
+    expect(second.value).toBe(1);
+  });
+
+  it('propagates per-call executors to static and dynamic dependencies', async () => {
+    const executedStoreIds: string[] = [];
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      compileCache: false,
+    });
+    const load = vi.fn(async ({ url }: { url: string }) => ({
+      resourceManager: {
+        url,
+        scriptCode: url.endsWith('/dynamic.js')
+          ? 'export const dynamicValue = 1;'
+          : 'export const staticValue = 41;',
+      },
+    }));
+    runtime.loader = { load } as any;
+
+    const module = await runtime.importByCode(
+      trimSource(`
+        import { staticValue } from './static.js';
+
+        export const value = staticValue + 1;
+        export const loadDynamic = () => import('./dynamic.js');
+      `),
+      'https://example.test/app.js',
+      'https://example.test/app.js',
+      (output, provider) => {
+        evalWithEnv(`\n${output.code}\n//${output.storeId}\n`, provider, undefined, true);
+        executedStoreIds.push(output.storeId);
+      },
+    );
+    const dynamicModule = await module.loadDynamic();
+
+    expect(module.value).toBe(42);
+    expect(dynamicModule.dynamicValue).toBe(1);
+    expect(executedStoreIds).toEqual([
+      'https://example.test/static.js',
+      'https://example.test/app.js',
+      'https://example.test/dynamic.js',
+    ]);
   });
 });

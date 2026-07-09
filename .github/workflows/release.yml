@@ -114,8 +114,28 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify npm trusted publishing toolchain
+        run: |
+          node --version
+          npm --version
+          node - <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const version = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+          const parts = version.split('.').map(Number);
+          const minimum = [11, 5, 1];
+          const supported = parts[0] > minimum[0] ||
+            (parts[0] === minimum[0] && (
+              parts[1] > minimum[1] ||
+              (parts[1] === minimum[1] && parts[2] >= minimum[2])
+            ));
+          if (!supported) {
+            throw new Error(`npm ${version} is too old for trusted publishing; npm >= 11.5.1 is required.`);
+          }
+          NODE
 
       - name: Install Rust wasm target
         run: rustup target add wasm32-unknown-unknown
@@ -149,18 +169,8 @@ jobs:
           pnpm exec changeset version
           node scripts/apply-pr-beta-version.mjs
 
-      - name: Configure npm auth
-        if: steps.changeset.outputs.has_release == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          test -n "$NODE_AUTH_TOKEN"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$HOME/.npmrc"
-
       - name: Publish beta package
         if: steps.changeset.outputs.has_release == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: pnpm run publish:beta
 
       - name: Comment beta release on PR
@@ -195,8 +205,28 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: 22
-          cache: pnpm
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+
+      - name: Verify npm trusted publishing toolchain
+        run: |
+          node --version
+          npm --version
+          node - <<'NODE'
+          const { execFileSync } = require('node:child_process');
+          const version = execFileSync('npm', ['--version'], { encoding: 'utf8' }).trim();
+          const parts = version.split('.').map(Number);
+          const minimum = [11, 5, 1];
+          const supported = parts[0] > minimum[0] ||
+            (parts[0] === minimum[0] && (
+              parts[1] > minimum[1] ||
+              (parts[1] === minimum[1] && parts[2] >= minimum[2])
+            ));
+          if (!supported) {
+            throw new Error(`npm ${version} is too old for trusted publishing; npm >= 11.5.1 is required.`);
+          }
+          NODE
 
       - name: Install Rust wasm target
         run: rustup target add wasm32-unknown-unknown
@@ -236,19 +266,13 @@ jobs:
         if: steps.changeset.outputs.has_release == 'true'
         run: pnpm run build
 
-      - name: Configure npm auth
-        if: steps.changeset.outputs.has_release == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          test -n "$NODE_AUTH_TOKEN"
-          printf '//registry.npmjs.org/:_authToken=%s\n' "$NODE_AUTH_TOKEN" > "$HOME/.npmrc"
-
       - name: Publish package
         if: steps.changeset.outputs.has_release == 'true'
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: pnpm exec changeset publish
+        run: npm publish
+
+      - name: Tag published package
+        if: steps.changeset.outputs.has_release == 'true'
+        run: pnpm exec changeset tag
 
       - name: Push release commit and tags
         if: steps.changeset.outputs.has_release == 'true'

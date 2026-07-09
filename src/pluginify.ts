@@ -3,6 +3,7 @@ import type { Text } from '@garfish/utils';
 import type { interfaces } from '@garfish/core';
 import { Runtime } from './runtime';
 import type {
+  RuntimeExecCode,
   RuntimeCompileCache,
   RuntimeExternalMatcher,
   RuntimeImportMap,
@@ -171,7 +172,7 @@ export function GarfishEsModule(options: Options = {}) {
             if (execOptions?.isModule) {
               const codeRef = { code };
 
-              runtime.options.execCode = function (output, provider) {
+              const execCode: RuntimeExecCode = (output, provider) => {
                 Object.assign(env, provider);
                 codeRef.code = `(() => {'use strict';\n${output.code}\n})()`;
 
@@ -216,8 +217,8 @@ export function GarfishEsModule(options: Options = {}) {
               if (url) {
                 appInstance.esmQueue.add(async () => {
                   execOptions.isInline
-                    ? await runtime.importByCode(codeRef.code, url)
-                    : await runtime.importByUrl(url, url);
+                    ? await runtime.importByCode(codeRef.code, url, url, execCode)
+                    : await runtime.importByUrl(url, url, execCode);
                 });
               }
             } else {

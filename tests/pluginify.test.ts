@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GarfishEsModule } from '../src/pluginify';
+import { getWasmBytes } from './wasm';
 
 function createSandbox() {
   return {
@@ -40,6 +41,19 @@ function createApp(overrides: Record<string, unknown> = {}) {
   };
 
   return { app, queue, sandbox, tasks };
+}
+
+function runQueuedTask(task: (next: () => void) => void | Promise<void>) {
+  return new Promise<void>((resolve, reject) => {
+    try {
+      const result = task(resolve);
+      if (result && typeof result.then === 'function') {
+        result.then(resolve, reject);
+      }
+    } catch (error) {
+      reject(error);
+    }
+  });
 }
 
 describe('GarfishEsModule plugin', () => {
@@ -130,5 +144,44 @@ describe('GarfishEsModule plugin', () => {
     expect(() =>
       plugin.afterLoad?.({ name: 'subapp', entry: 'https://example.test' } as any, app as any),
     ).toThrow('[subapp] Invalid importmap in https://example.test/subapp.html');
+  });
+
+  it('keeps queued module scripts bound to their own execution context', async () => {
+    const plugin = GarfishEsModule({ wasm: getWasmBytes() })({
+      externals: {},
+      loader: {},
+    } as any);
+    const sandbox = createSandbox();
+    sandbox.createExecParams.mockImplementation(
+      (_codeRef: unknown, env: Record<string, unknown>) => env,
+    );
+    const { app, tasks } = createApp({ vmSandbox: sandbox });
+    const firstEnv: Record<string, unknown> = {};
+    const secondEnv: Record<string, unknown> = {};
+
+    plugin.afterLoad?.({ name: 'subapp', entry: 'https://example.test' } as any, app as any);
+
+    app.runCode('export const first = 1;', firstEnv, 'https://example.test/first.js', {
+      isInline: true,
+      isModule: true,
+    });
+    app.runCode('export const second = 2;', secondEnv, 'https://example.test/second.js', {
+      isInline: true,
+      isModule: true,
+    });
+
+    expect(tasks).toHaveLength(2);
+
+    await runQueuedTask(tasks[0]);
+    await runQueuedTask(tasks[1]);
+
+    expect(sandbox.hooks.lifecycle.beforeInvoke.emit.mock.calls[0][1]).toBe(
+      'https://example.test/first.js',
+    );
+    expect(sandbox.hooks.lifecycle.beforeInvoke.emit.mock.calls[1][1]).toBe(
+      'https://example.test/second.js',
+    );
+    expect(sandbox.createExecParams.mock.calls[0][1]).toBe(firstEnv);
+    expect(sandbox.createExecParams.mock.calls[1][1]).toBe(secondEnv);
   });
 });
