@@ -16,7 +16,7 @@ import { ImportMap } from '@jspm/import-map';
 import {
   transformModuleWithWasm,
   type WasmInitInput,
-  type WasmTransformResult,
+  type WasmImportInfo,
 } from './wasm';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
 
@@ -106,10 +106,19 @@ export interface RuntimeCompileCache {
 
 export interface ModuleResource {
   code: string;
+  imports?: WasmImportInfo[];
   storeId: string;
   realUrl: string;
   exports: string[];
 }
+
+interface CompiledModuleResource extends ModuleResource {
+  imports: WasmImportInfo[];
+}
+
+const hasImportMetadata = (
+  output: ModuleResource,
+): output is CompiledModuleResource => Array.isArray(output.imports);
 
 export type RuntimeExecCode = (
   output: ModuleResource,
@@ -462,32 +471,46 @@ export class Runtime {
     const cacheKey = this.getCompileCacheKey(code, storeId, baseRealUrl);
 
     try {
+      let output: CompiledModuleResource | undefined;
+
       if (compileCache) {
         const cached = compileCache.get(cacheKey);
         if (cached) {
-          metric.cacheHit = true;
-          const output = await cached;
-          return { ...output, storeId, realUrl: baseRealUrl };
+          const cachedOutput = await cached;
+          if (hasImportMetadata(cachedOutput)) {
+            metric.cacheHit = true;
+            output = cachedOutput;
+          } else {
+            compileCache.delete(cacheKey);
+          }
         }
+
+        if (!output) {
+          const compilePromise = this.compileModule(
+            code,
+            storeId,
+            baseRealUrl,
+            metric,
+          ).catch((error) => {
+            compileCache.delete(cacheKey);
+            throw error;
+          });
+          compileCache.set(cacheKey, compilePromise);
+          output = await compilePromise;
+          compileCache.set(cacheKey, output);
+        }
+      } else {
+        output = await this.compileModule(code, storeId, baseRealUrl, metric);
       }
 
-      if (compileCache) {
-        const compilePromise = this.compileModule(
-          code,
-          storeId,
-          baseRealUrl,
-          metric,
-        ).catch((error) => {
-          compileCache.delete(cacheKey);
-          throw error;
-        });
-        compileCache.set(cacheKey, compilePromise);
-        const output = await compilePromise;
-        compileCache.set(cacheKey, output);
-        return { ...output, storeId, realUrl: baseRealUrl };
-      }
+      const runtimeOutput = { ...output, storeId, realUrl: baseRealUrl };
+      const dependencyStart = now();
+      await this.loadDependencies(
+        this.toDependencyRequests(runtimeOutput, storeId, baseRealUrl),
+      );
+      metric.dependencyMs = now() - dependencyStart;
 
-      return this.compileModule(code, storeId, baseRealUrl, metric);
+      return runtimeOutput;
     } finally {
       metric.totalMs = now() - metricStart;
       this.options.metrics?.({ ...metric });
@@ -508,12 +531,9 @@ export class Runtime {
     );
     metric.transformMs = now() - transformStart;
 
-    const dependencyStart = now();
-    await this.loadDependencies(this.toDependencyRequests(output, storeId, baseRealUrl));
-    metric.dependencyMs = now() - dependencyStart;
-
     return {
       code: output.code,
+      imports: output.imports,
       exports: output.exports,
       storeId,
       realUrl: baseRealUrl,
@@ -521,7 +541,7 @@ export class Runtime {
   }
 
   private toDependencyRequests(
-    output: WasmTransformResult,
+    output: Pick<CompiledModuleResource, 'imports'>,
     storeId: string,
     baseRealUrl: string,
   ) {
