@@ -151,13 +151,9 @@ jobs:
         env:
           BASE_REF: ${{ github.base_ref }}
         run: |
-          git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}" --depth=1
-          if pnpm exec changeset status --since "origin/${BASE_REF}" --output "$RUNNER_TEMP/changeset-status.json"; then
-            node scripts/changeset-has-release.mjs "$RUNNER_TEMP/changeset-status.json"
-          else
-            echo "has_release=false" >> "$GITHUB_OUTPUT"
-            echo "No releasable changeset found for this package."
-          fi
+          git fetch origin "${BASE_REF}:refs/remotes/origin/${BASE_REF}"
+          pnpm exec changeset status --since "origin/${BASE_REF}" --output "$RUNNER_TEMP/changeset-status.json"
+          node scripts/changeset-has-release.mjs "$RUNNER_TEMP/changeset-status.json"
 
       - name: Version package for beta
         id: beta
