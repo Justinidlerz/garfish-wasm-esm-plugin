@@ -38,6 +38,20 @@ const isPromiseLike = (value: unknown): value is Promise<unknown> => {
   return Boolean(value && typeof (value as Promise<unknown>).then === 'function');
 };
 
+const reportErrorToBrowser = (error: unknown) => {
+  const reportError = Reflect.get(globalThis, 'reportError');
+  if (typeof reportError === 'function') {
+    try {
+      reportError.call(globalThis, error);
+      return;
+    } catch {
+      // Fall through when a user-provided reporter fails.
+    }
+  }
+
+  console.error(error);
+};
+
 const isImportMapType = (type?: string) =>
   type?.trim().toLowerCase() === 'importmap';
 
@@ -78,6 +92,19 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
   const originalAdd = queue.add.bind(queue);
   const originalAwaitCompletion = queue.awaitCompletion?.bind(queue);
   let queueError: unknown;
+  let hasQueueError = false;
+  const reportedErrors = new Set<unknown>();
+
+  const captureQueueError = (error: unknown) => {
+    if (!hasQueueError) {
+      queueError = error;
+      hasQueueError = true;
+    }
+    if (!reportedErrors.has(error)) {
+      reportedErrors.add(error);
+      reportErrorToBrowser(error);
+    }
+  };
 
   queue.add = (task: QueueTask) => {
     originalAdd((next) => {
@@ -91,15 +118,14 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
       try {
         const result = task(release);
         if (isPromiseLike(result)) {
-          result
-            .catch((error) => {
-              queueError = error;
-            })
-            .finally(release);
+          result.catch(captureQueueError).finally(release);
         }
       } catch (error) {
-        queueError = error;
-        release();
+        try {
+          captureQueueError(error);
+        } finally {
+          release();
+        }
       }
     });
   };
@@ -107,9 +133,11 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
   if (originalAwaitCompletion) {
     queue.awaitCompletion = async () => {
       await originalAwaitCompletion();
-      if (queueError) {
+      if (hasQueueError) {
         const error = queueError;
         queueError = undefined;
+        hasQueueError = false;
+        reportedErrors.clear();
         throw error;
       }
     };
