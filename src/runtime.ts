@@ -128,8 +128,8 @@ export type RuntimeExecCode = (
 interface ModuleLoadRecord {
   storeId: string;
   requestUrl: string;
-  promise?: Promise<ModuleResource>;
-  resource?: ModuleResource;
+  promise?: Promise<CompiledModuleResource>;
+  resource?: CompiledModuleResource;
 }
 
 export interface RuntimeImportMap {
@@ -504,12 +504,6 @@ export class Runtime {
       }
 
       const runtimeOutput = { ...output, storeId, realUrl: baseRealUrl };
-      const dependencyStart = now();
-      await this.loadDependencies(
-        this.toDependencyRequests(runtimeOutput, storeId, baseRealUrl),
-      );
-      metric.dependencyMs = now() - dependencyStart;
-
       return runtimeOutput;
     } finally {
       metric.totalMs = now() - metricStart;
@@ -578,34 +572,17 @@ export class Runtime {
     });
   }
 
-  private async loadDependencies(
-    deps: Array<{ storeId: string; requestUrl: string }>,
-  ) {
-    const results = await Promise.allSettled(
-      deps
-        .map(({ storeId, requestUrl }) =>
-          this.compileAndFetchCode(storeId, requestUrl),
-        )
-        .filter(Boolean) as Array<Promise<ModuleResource>>,
-    );
-    const rejected = results.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    );
-
-    if (rejected) throw rejected.reason;
-  }
-
   private getOrCreateLoad(storeId: string, requestUrl: string) {
+    const existing = this.loadRegistry[storeId];
+    if (existing) return existing;
+
     if (this.resources[storeId]) {
       return {
         storeId,
         requestUrl,
-        resource: this.resources[storeId],
+        resource: this.resources[storeId] as CompiledModuleResource,
       };
     }
-
-    const existing = this.loadRegistry[storeId];
-    if (existing) return existing;
 
     const load: ModuleLoadRecord = (this.loadRegistry[storeId] = {
       storeId,
@@ -613,8 +590,10 @@ export class Runtime {
     });
 
     load.promise = this.fetchAndCompileLoad(load).catch((error) => {
-      delete this.loadRegistry[storeId];
-      delete this.resources[storeId];
+      if (this.loadRegistry[storeId] === load) {
+        delete this.loadRegistry[storeId];
+        delete this.resources[storeId];
+      }
       throw error;
     });
 
@@ -642,18 +621,79 @@ export class Runtime {
       fetchMs,
     });
     load.resource = output;
-    this.resources[load.storeId] = output;
     return output;
+  }
+
+  private getCompiledLoad(load: ModuleLoadRecord) {
+    if (load.resource) return Promise.resolve(load.resource);
+    if (load.promise) return load.promise;
+    return Promise.reject(new Error(`Module '${load.storeId}' not found`));
+  }
+
+  private async loadModuleGraph(entryLoad: ModuleLoadRecord) {
+    const visited = new Map<string, ModuleLoadRecord>();
+    const queue: ModuleLoadRecord[] = [];
+    let graphError: unknown;
+    let hasGraphError = false;
+
+    const enqueue = (load: ModuleLoadRecord) => {
+      if (visited.has(load.storeId)) return;
+      visited.set(load.storeId, load);
+      queue.push(load);
+    };
+
+    enqueue(entryLoad);
+
+    while (queue.length > 0) {
+      const batch = queue.splice(0);
+      const results = await Promise.allSettled(
+        batch.map((load) => this.getCompiledLoad(load)),
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          if (!hasGraphError) {
+            graphError = result.reason;
+            hasGraphError = true;
+          }
+          return;
+        }
+
+        const load = batch[index];
+        load.resource = result.value;
+        try {
+          this.toDependencyRequests(
+            result.value,
+            load.storeId,
+            result.value.realUrl,
+          ).forEach(({ storeId, requestUrl }) => {
+            enqueue(this.getOrCreateLoad(storeId, requestUrl));
+          });
+        } catch (error) {
+          if (!hasGraphError) {
+            graphError = error;
+            hasGraphError = true;
+          }
+        }
+      });
+    }
+
+    if (hasGraphError) throw graphError;
+
+    visited.forEach((load, storeId) => {
+      this.resources[storeId] = load.resource!;
+    });
+    return entryLoad.resource!;
   }
 
   private compileAndFetchCode(
     storeId: string,
     url?: string,
   ): void | Promise<ModuleResource> {
+    if (this.resources[storeId]) return;
     if (!url) url = storeId;
     const load = this.getOrCreateLoad(storeId, url);
-    if (load.resource) return;
-    return load.promise;
+    return this.loadModuleGraph(load);
   }
 
   import(storeId: string) {
@@ -693,8 +733,39 @@ export class Runtime {
       const loadedModule = this.memoryModules[storeId];
       if (loadedModule) return loadedModule;
 
+      const entryLoad: ModuleLoadRecord = {
+        storeId,
+        requestUrl: metaUrl,
+        resource: output,
+      };
+      const previousLoad = this.loadRegistry[storeId];
+      const previousResource = this.resources[storeId];
+      this.loadRegistry[storeId] = entryLoad;
+      try {
+        await this.loadModuleGraph(entryLoad);
+      } catch (error) {
+        if (this.loadRegistry[storeId] === entryLoad) {
+          if (previousLoad) {
+            this.loadRegistry[storeId] = previousLoad;
+          } else {
+            delete this.loadRegistry[storeId];
+          }
+        }
+        if (previousResource) {
+          this.resources[storeId] = previousResource;
+        } else {
+          delete this.resources[storeId];
+        }
+        throw error;
+      }
+      if (this.loadRegistry[storeId] === entryLoad) {
+        delete this.loadRegistry[storeId];
+      }
+
+      const graphLoadedModule = this.memoryModules[storeId];
+      if (graphLoadedModule) return graphLoadedModule;
+
       const memoryModule = {};
-      this.resources[storeId] = output;
       this.memoryModules[storeId] = memoryModule;
 
       try {
