@@ -144,12 +144,31 @@ impl<'a> Transformer<'a> {
             });
         }
 
+        let (export_prelude, export_epilogue, exports) = self.generate_export_code();
+        if !export_prelude.is_empty() {
+            let insertion_offset = program
+                .directives
+                .last()
+                .map(|directive| directive.span.end as usize)
+                .or_else(|| {
+                    program
+                        .hashbang
+                        .as_ref()
+                        .map(|hashbang| hashbang.span.end as usize)
+                })
+                .unwrap_or_default();
+            self.replacements.push(Replacement {
+                start: insertion_offset,
+                end: insertion_offset,
+                text: format!("\n{export_prelude}\n"),
+            });
+        }
+
         let code = apply_replacements(self.source, &self.replacements)
             .map_err(|message| format!("{} ({})", message, self.filename))?;
-        let (export_code, exports) = self.generate_export_code();
 
         Ok(TransformResult {
-            code: format!("{code}{export_code}"),
+            code: format!("{code}{export_epilogue}"),
             imports: dedupe_imports(self.imports),
             exports,
         })
@@ -428,8 +447,9 @@ impl<'a> Transformer<'a> {
         }
     }
 
-    fn generate_export_code(&self) -> (String, Vec<String>) {
-        let mut code = String::new();
+    fn generate_export_code(&self) -> (String, String, Vec<String>) {
+        let mut prelude = String::new();
+        let mut epilogue = String::new();
         let mut exported_names = BTreeSet::new();
         let mut explicit_getters = Vec::new();
 
@@ -450,7 +470,7 @@ impl<'a> Transformer<'a> {
                 })
                 .collect::<Vec<_>>()
                 .join(",\n");
-            code.push_str(&format!("\n{GARFISH_EXPORT}({{\n{properties}\n}});"));
+            prelude.push_str(&format!("{GARFISH_EXPORT}({{\n{properties}\n}});"));
         }
 
         let excludes = {
@@ -459,13 +479,13 @@ impl<'a> Transformer<'a> {
             json_string_array(&names.into_iter().collect::<Vec<_>>())
         };
         for getter in &self.export_star_getters {
-            code.push_str(&format!(
+            epilogue.push_str(&format!(
                 "\n{GARFISH_EXPORT_STAR}({}, {excludes});",
                 getter.module_name,
             ));
         }
 
-        (code, exported_names.into_iter().collect())
+        (prelude, epilogue, exported_names.into_iter().collect())
     }
 }
 
