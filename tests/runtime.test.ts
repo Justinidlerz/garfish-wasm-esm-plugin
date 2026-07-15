@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { evalWithEnv } from '@garfish/utils';
-import { Runtime } from '../src/runtime';
+import {
+  Runtime,
+  type ModuleResource,
+  type RuntimeCompileCache,
+  type RuntimeCompileMetric,
+} from '../src/runtime';
 import { getWasmBytes, trimSource } from './wasm';
 
 describe('Runtime', () => {
@@ -112,6 +117,153 @@ describe('Runtime', () => {
 
     expect(module.exactValue).toBe('exact');
     expect(module.prefixValue).toBe('prefix');
+  });
+
+  it('executes named and default live bindings through a circular static graph', async () => {
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      compileCache: false,
+    });
+    const load = vi.fn(async ({ url }: { url: string }) => ({
+      resourceManager: {
+        url,
+        scriptCode: trimSource(`
+          import defaultValue, { named } from './a.js';
+
+          export function readEntry() {
+            return defaultValue + ':' + named;
+          }
+        `),
+      },
+    }));
+    runtime.loader = { load } as any;
+
+    const module = await runtime.importByCode(
+      trimSource(`
+        import { readEntry } from './b.js';
+
+        export const named = 'named';
+        const defaultValue = 'default';
+        export default defaultValue;
+        export const result = readEntry();
+      `),
+      'https://example.test/a.js',
+    );
+
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(module.named).toBe('named');
+    expect(module.default).toBe('default');
+    expect(module.result).toBe('default:named');
+  });
+
+  it('rebuilds dependency resources when transformed code is shared across runtimes', async () => {
+    const cacheValues = new Map<
+      string,
+      ModuleResource | Promise<ModuleResource>
+    >();
+    const compileCache: RuntimeCompileCache = {
+      get: (key) => cacheValues.get(key),
+      set: (key, value) => cacheValues.set(key, value),
+      delete: (key) => cacheValues.delete(key),
+    };
+    const entryCode = trimSource(`
+      import { value } from './dep.js';
+      export const result = value + 1;
+    `);
+    const dependencyCode = 'export const value = 41;';
+
+    const createRuntime = (metrics: RuntimeCompileMetric[]) => {
+      const runtime = new Runtime({
+        scope: 'test',
+        wasm: getWasmBytes(),
+        compileCache,
+        metrics: (metric) => metrics.push(metric),
+      });
+      const load = vi.fn(async ({ url }: { url: string }) => ({
+        resourceManager: {
+          url,
+          scriptCode: dependencyCode,
+        },
+      }));
+      runtime.loader = { load } as any;
+      return { load, runtime };
+    };
+
+    const firstMetrics: RuntimeCompileMetric[] = [];
+    const first = createRuntime(firstMetrics);
+    const firstModule = await first.runtime.importByCode(
+      entryCode,
+      'https://example.test/app.js',
+    );
+
+    const secondMetrics: RuntimeCompileMetric[] = [];
+    const second = createRuntime(secondMetrics);
+    const secondModule = await second.runtime.importByCode(
+      entryCode,
+      'https://example.test/app.js',
+    );
+
+    expect(firstModule.result).toBe(42);
+    expect(secondModule.result).toBe(42);
+    expect(first.load).toHaveBeenCalledTimes(1);
+    expect(second.load).toHaveBeenCalledTimes(1);
+    expect(secondMetrics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          storeId: 'https://example.test/app.js',
+          cacheHit: true,
+        }),
+        expect.objectContaining({
+          storeId: 'https://example.test/dep.js',
+          cacheHit: true,
+        }),
+      ]),
+    );
+  });
+
+  it('retries a failed dependency before executing its circular graph', async () => {
+    const runtime = new Runtime({
+      scope: 'test',
+      wasm: getWasmBytes(),
+      compileCache: false,
+    });
+    let attempts = 0;
+    const load = vi.fn(async ({ url }: { url: string }) => {
+      attempts += 1;
+      return {
+        resourceManager: {
+          url,
+          scriptCode:
+            attempts === 1
+              ? 'export const broken = }'
+              : trimSource(`
+                  import { value } from './a.js';
+                  export function readEntry() {
+                    return value;
+                  }
+                `),
+        },
+      };
+    });
+    runtime.loader = { load } as any;
+    const entryCode = trimSource(`
+      import { readEntry } from './b.js';
+      export const value = 42;
+      export const result = readEntry();
+    `);
+
+    await expect(
+      runtime.importByCode(entryCode, 'https://example.test/a.js'),
+    ).rejects.toThrow('https://example.test/b.js');
+
+    const module = await runtime.importByCode(
+      entryCode,
+      'https://example.test/a.js',
+    );
+
+    expect(load).toHaveBeenCalledTimes(2);
+    expect(module.result).toBe(42);
   });
 
   it('does not poison a store id when importByCode compilation fails', async () => {

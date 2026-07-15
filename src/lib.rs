@@ -144,12 +144,31 @@ impl<'a> Transformer<'a> {
             });
         }
 
+        let (export_prelude, export_epilogue, exports) = self.generate_export_code();
+        if !export_prelude.is_empty() {
+            let insertion_offset = program
+                .directives
+                .last()
+                .map(|directive| directive.span.end as usize)
+                .or_else(|| {
+                    program
+                        .hashbang
+                        .as_ref()
+                        .map(|hashbang| hashbang.span.end as usize)
+                })
+                .unwrap_or_default();
+            self.replacements.push(Replacement {
+                start: insertion_offset,
+                end: insertion_offset,
+                text: format!("\n{export_prelude}\n"),
+            });
+        }
+
         let code = apply_replacements(self.source, &self.replacements)
             .map_err(|message| format!("{} ({})", message, self.filename))?;
-        let (export_code, exports) = self.generate_export_code();
 
         Ok(TransformResult {
-            code: format!("{code}{export_code}"),
+            code: format!("{code}{export_epilogue}"),
             imports: dedupe_imports(self.imports),
             exports,
         })
@@ -202,7 +221,6 @@ impl<'a> Transformer<'a> {
                                 binding.live_expression.clone(),
                             );
                         }
-                        lines.push(binding.declaration_code);
                     } else {
                         lines.push(import_namespace_binding_code(specifier, &module_name));
                     }
@@ -428,8 +446,9 @@ impl<'a> Transformer<'a> {
         }
     }
 
-    fn generate_export_code(&self) -> (String, Vec<String>) {
-        let mut code = String::new();
+    fn generate_export_code(&self) -> (String, String, Vec<String>) {
+        let mut prelude = String::new();
+        let mut epilogue = String::new();
         let mut exported_names = BTreeSet::new();
         let mut explicit_getters = Vec::new();
 
@@ -450,7 +469,7 @@ impl<'a> Transformer<'a> {
                 })
                 .collect::<Vec<_>>()
                 .join(",\n");
-            code.push_str(&format!("\n{GARFISH_EXPORT}({{\n{properties}\n}});"));
+            prelude.push_str(&format!("{GARFISH_EXPORT}({{\n{properties}\n}});"));
         }
 
         let excludes = {
@@ -459,20 +478,19 @@ impl<'a> Transformer<'a> {
             json_string_array(&names.into_iter().collect::<Vec<_>>())
         };
         for getter in &self.export_star_getters {
-            code.push_str(&format!(
+            epilogue.push_str(&format!(
                 "\n{GARFISH_EXPORT_STAR}({}, {excludes});",
                 getter.module_name,
             ));
         }
 
-        (code, exported_names.into_iter().collect())
+        (prelude, epilogue, exported_names.into_iter().collect())
     }
 }
 
 struct ImportBinding {
     local_name: String,
     live_expression: String,
-    declaration_code: String,
     symbol_id: Option<SymbolId>,
 }
 
@@ -558,7 +576,6 @@ fn import_binding(
                 property_access(&module_export_name(&specifier.imported)),
             );
             Some(ImportBinding {
-                declaration_code: format!("const {local_name} = {live_expression};"),
                 local_name,
                 live_expression,
                 symbol_id: specifier.local.symbol_id.get(),
@@ -568,7 +585,6 @@ fn import_binding(
             let local_name = specifier.local.name.to_string();
             let live_expression = format!("(0, {GARFISH_DEFAULT_IMPORT}({module_name}))");
             Some(ImportBinding {
-                declaration_code: format!("const {local_name} = {live_expression};"),
                 local_name,
                 live_expression,
                 symbol_id: specifier.local.symbol_id.get(),
@@ -811,6 +827,73 @@ mod tests {
                 .contains("const obj = { count: (0, __m0__.count) };")
         );
         assert!(result.code.contains("\"obj\": () => obj"));
+    }
+
+    #[test]
+    fn keeps_named_and_default_imports_as_live_reads() {
+        let result = transform_fixture(
+            "import fallback, { value, update as setValue } from './dep.js';\n\
+             const snapshot = value;\n\
+             setValue();\n\
+             export function read() { return fallback + value; }",
+        );
+
+        assert!(
+            result
+                .code
+                .contains("const __m0__ = __GARFISH_IMPORT__(\"./dep.js\");")
+        );
+        assert!(!result.code.contains("const fallback ="));
+        assert!(!result.code.contains("const value ="));
+        assert!(!result.code.contains("const setValue ="));
+        assert!(result.code.contains("const snapshot = (0, __m0__.value);"));
+        assert!(result.code.contains("(0, __m0__.update)();"));
+        assert!(
+            result
+                .code
+                .contains("return (0, __GARFISH_DEFAULT_IMPORT__(__m0__)) + (0, __m0__.value);")
+        );
+    }
+
+    #[test]
+    fn preserves_namespace_and_side_effect_imports() {
+        let result = transform_fixture(
+            "import './setup.js';\n\
+             import * as dep from './dep.js';\n\
+             export const value = dep.value;",
+        );
+
+        assert!(result.code.contains("__GARFISH_IMPORT__(\"./setup.js\");"));
+        assert!(
+            result
+                .code
+                .contains("const __m1__ = __GARFISH_IMPORT__(\"./dep.js\");")
+        );
+        assert!(
+            result
+                .code
+                .contains("const dep = __GARFISH_NAMESPACE__(__m1__);")
+        );
+        assert!(result.code.contains("const value = dep.value;"));
+    }
+
+    #[test]
+    fn registers_export_getters_after_directives_and_before_imports() {
+        let result = transform_fixture(
+            "'use strict';\n\
+             import { read } from './dep.js';\n\
+             export const value = read();",
+        );
+
+        let directive_index = result.code.find("'use strict';").unwrap();
+        let export_index = result.code.find("__GARFISH_EXPORT__({").unwrap();
+        let import_index = result
+            .code
+            .find("const __m0__ = __GARFISH_IMPORT__(\"./dep.js\");")
+            .unwrap();
+
+        assert!(directive_index < export_index);
+        assert!(export_index < import_index);
     }
 
     #[test]
