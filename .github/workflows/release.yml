@@ -27,14 +27,13 @@ env:
 jobs:
   pr-quality-report:
     name: PR quality report
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR head
+      - name: Checkout source
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -54,13 +53,19 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Run tests with coverage
+      - name: Run Rust unit tests
+        run: pnpm run test:rust
+
+      - name: Run JS tests with coverage
         id: coverage
         run: pnpm run test:coverage
 
       - name: Upload coverage to Codecov
         id: codecov
-        if: always() && steps.coverage.outcome == 'success'
+        if: >-
+          github.event_name == 'pull_request' &&
+          always() &&
+          steps.coverage.outcome == 'success'
         uses: codecov/codecov-action@v7
         with:
           files: ./coverage/lcov.info
@@ -72,14 +77,20 @@ jobs:
 
       - name: Run benchmark
         id: benchmark
-        if: always() && steps.coverage.outcome == 'success'
+        if: >-
+          github.event_name == 'pull_request' &&
+          always() &&
+          steps.coverage.outcome == 'success'
         env:
           BENCH_TIME_MS: 1000
           BENCH_WARMUP_MS: 250
         run: node scripts/benchmark-transform.mjs --output "$RUNNER_TEMP/benchmark.md"
 
       - name: Comment quality report on PR
-        if: always() && github.event.pull_request.head.repo.full_name == github.repository
+        if: >-
+          github.event_name == 'pull_request' &&
+          always() &&
+          github.event.pull_request.head.repo.full_name == github.repository
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -95,6 +106,7 @@ jobs:
 
   pr-beta:
     name: Publish PR beta
+    needs: pr-quality-report
     if: >-
       github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository &&
@@ -184,6 +196,7 @@ jobs:
 
   release:
     name: Publish release
+    needs: pr-quality-report
     if: >-
       github.event_name == 'push' &&
       github.ref == 'refs/heads/master' &&
