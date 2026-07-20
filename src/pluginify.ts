@@ -27,7 +27,7 @@ interface QueueLike {
   [key: string]: unknown;
 }
 
-const QUEUE_PATCHED_KEY = '__garfishEsModuleOxcWasmPromiseAware';
+const QUEUE_PATCHED_KEY = '__garfishEsModuleYukuWasmPromiseAware';
 
 const now = () =>
   typeof performance !== 'undefined' && performance.now
@@ -138,7 +138,7 @@ export function GarfishEsModule(options: Options = {}) {
     };
 
     return {
-      name: 'es-module-oxc-wasm',
+      name: 'es-module-yuku-zig-wasm',
 
       afterLoad(appInfo, appInstance) {
         if (!appInstance) return;

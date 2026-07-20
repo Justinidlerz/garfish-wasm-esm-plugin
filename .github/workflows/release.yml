@@ -44,17 +44,13 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install Rust wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
-
-      - name: Run Rust unit tests
-        run: pnpm run test:rust
 
       - name: Run JS tests with coverage
         id: coverage
@@ -149,11 +145,10 @@ jobs:
           }
           NODE
 
-      - name: Install Rust wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
@@ -237,11 +232,10 @@ jobs:
           }
           NODE
 
-      - name: Install Rust wasm target
-        run: rustup target add wasm32-unknown-unknown
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --locked
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile

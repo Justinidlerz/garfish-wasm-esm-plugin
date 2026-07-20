@@ -3,8 +3,8 @@
 [![codecov](https://codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin/branch/master/graph/badge.svg)](https://app.codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin)
 
 Garfish plugin for running `<script type="module">` resources through a browser
-WebAssembly transformer. The wasm core uses OXC to parse ESM syntax and rewrites
-imports/exports into the Garfish runtime helpers.
+WebAssembly transformer. The wasm core uses Yuku's Zig parser and semantic model
+to rewrite imports/exports into the Garfish runtime helpers.
 
 ## Usage
 
@@ -86,13 +86,18 @@ The generated transformer artifact is
 
 | Artifact | Size |
 | --- | ---: |
-| Raw wasm | 857,617 bytes (837.5 KiB) |
-| Gzip | 326,597 bytes (318.9 KiB) |
+| Raw wasm | 695,312 bytes (679.0 KiB) |
+| Gzip | 204,943 bytes (200.1 KiB) |
+| Brotli | 142,781 bytes (139.4 KiB) |
+| npm package | 228,429 bytes (223.1 KiB) |
 
-The size comes from bundling OXC parser and semantic analysis into the browser
-runtime. The semantic pass is intentional because imported bindings need symbol
-aware rewriting to preserve ESM live binding behavior after the code is lowered
-to Garfish runtime helpers.
+The previous Rust/OXC artifact was 856,796 raw bytes, 325,842 gzip bytes, and
+243,532 Brotli bytes on the same branch. The Zig/Yuku transformer is 18.8%
+smaller raw, 37.1% smaller with gzip, and 41.4% smaller with Brotli. Semantic
+analysis remains inside wasm because imported bindings need symbol-aware
+rewriting to preserve ESM live binding behavior after lowering.
+The packed npm artifact also drops from 349,565 bytes to 228,429 bytes, a 34.7%
+reduction.
 
 ## Why This Plugin Exists
 
@@ -105,7 +110,7 @@ source after Garfish has fetched the HTML entry and its scripts.
 This package keeps that work in a Garfish plugin boundary:
 
 - wasm runs in the browser and parses the fetched module source on demand;
-- OXC AST and semantic data are used instead of regex or text-only rewriting;
+- Yuku AST and semantic data are used instead of regex or text-only rewriting;
 - imports, exports, `import.meta`, dynamic `import()`, import maps, and Garfish
   externals are handled by the same runtime;
 - live bindings survive the CommonJS-like helper lowering used by the plugin.
@@ -117,8 +122,9 @@ pnpm install
 pnpm build
 ```
 
-`pnpm build` first runs `wasm-pack build --target web --out-dir pkg`, then builds
-the TypeScript Garfish wrapper into `dist`.
+The build requires Zig 0.16.0. `pnpm build` first compiles the Yuku-backed Zig
+transformer to `wasm32-freestanding`, packages the browser binding in `pkg/`,
+then builds the TypeScript Garfish wrapper into `dist/`.
 
 ## Test
 
@@ -140,10 +146,16 @@ the latest benchmark table.
 
 ```sh
 pnpm benchmark
+pnpm benchmark:parse
 pnpm benchmark:update
 ```
 
 `pnpm benchmark` measures the wasm transform path against fixed ESM fixtures.
+`pnpm benchmark:parse` measures Yuku's parser-only wasm path against the same
+4,319-byte large-module fixture used to baseline the previous Rust/OXC parser.
+The same-process migration A/B measured 0.0239 ms for Zig/Yuku versus 0.0458 ms
+for Rust/OXC, a 47.8% reduction in mean parse latency; full details are in
+`benchmarks/parse.md`.
 `pnpm benchmark:update` refreshes both `benchmarks/transform.md` and the table
 below.
 
@@ -151,13 +163,14 @@ below.
 
 | Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `small-live-bindings` | 255 | 0.011 ms | 0.011 ms | 0.014 ms | 90,876 ops/sec | 90,215 |
-| `medium-dashboard` | 1,247 | 0.064 ms | 0.063 ms | 0.078 ms | 15,850 ops/sec | 15,707 |
-| `large-re-export` | 5,314 | 0.250 ms | 0.250 ms | 0.348 ms | 4,010 ops/sec | 3,993 |
+| `small-live-bindings` | 255 | 0.007 ms | 0.007 ms | 0.009 ms | 139,392 ops/sec | 411,049 |
+| `medium-dashboard` | 1,247 | 0.039 ms | 0.037 ms | 0.102 ms | 26,977 ops/sec | 77,551 |
+| `large-re-export` | 5,314 | 0.130 ms | 0.130 ms | 0.212 ms | 7,806 ops/sec | 23,159 |
 
-Measured on Node v22.23.1 with `BENCH_TIME_MS=1000` and `BENCH_WARMUP_MS=250`.
+Measured on Node v22.23.1 with `BENCH_TIME_MS=3000` and `BENCH_WARMUP_MS=500`.
 
 <!-- benchmark-results:end -->
+
 
 
 ## Vite Example
