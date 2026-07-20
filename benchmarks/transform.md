@@ -2,10 +2,10 @@
 
 | Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `small-live-bindings` | 255 | 0.007 ms | 0.007 ms | 0.009 ms | 139,392 ops/sec | 411,049 |
-| `medium-dashboard` | 1,247 | 0.039 ms | 0.037 ms | 0.102 ms | 26,977 ops/sec | 77,551 |
-| `large-re-export` | 5,314 | 0.130 ms | 0.130 ms | 0.212 ms | 7,806 ops/sec | 23,159 |
+| `small-live-bindings` | 255 | 0.005 ms | 0.005 ms | 0.005 ms | 212,806 ops/sec | 1,060,091 |
+| `medium-dashboard` | 1,247 | 0.025 ms | 0.024 ms | 0.033 ms | 40,850 ops/sec | 197,797 |
+| `large-re-export` | 5,314 | 0.083 ms | 0.083 ms | 0.090 ms | 12,052 ops/sec | 60,174 |
 
-Measured on Node v22.23.1 with `BENCH_TIME_MS=3000` and `BENCH_WARMUP_MS=500`.
+Measured on Node v22.23.1 with `BENCH_TIME_MS=5000` and `BENCH_WARMUP_MS=1000`.
 
 <!-- benchmark-results:end -->

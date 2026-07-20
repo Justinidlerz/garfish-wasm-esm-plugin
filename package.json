@@ -41,7 +41,7 @@
   },
   "scripts": {
     "build": "pnpm run build:wasm && pnpm run build:js",
-    "build:wasm": "zig build wasm -Doptimize=ReleaseSmall && node scripts/package-wasm.mjs",
+    "build:wasm": "zig build wasm -Doptimize=ReleaseFast && node scripts/package-wasm.mjs",
     "build:js": "rollup -c",
     "changeset": "changeset",
     "example:build": "pnpm run build:wasm && vite build --config examples/vite/vite.config.ts",
@@ -54,7 +54,7 @@
     "test:coverage": "pnpm run build:wasm && vitest run --coverage",
     "test:watch": "vitest",
     "benchmark": "pnpm run build:wasm && node scripts/benchmark-transform.mjs",
-    "benchmark:parse": "zig build parse-benchmark -Doptimize=ReleaseSmall && node scripts/benchmark-parse.mjs",
+    "benchmark:parse": "zig build parse-benchmark -Doptimize=ReleaseFast && node scripts/benchmark-parse.mjs",
     "benchmark:update": "pnpm run build:wasm && node scripts/benchmark-transform.mjs --update-readme --output benchmarks/transform.md",
     "benchmark:update-readme": "pnpm run benchmark:update",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"

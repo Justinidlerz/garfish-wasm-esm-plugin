@@ -29,9 +29,17 @@ const ExportGetter = struct {
 };
 
 const TransformResult = struct {
-    code: []const u8,
+    source: []const u8,
+    replacements: []const Replacement,
+    epilogue: []const u8,
     imports: []const []const u8,
     exports: []const []const u8,
+};
+
+const ExpressionNodes = struct {
+    meta_properties: std.ArrayList(parser.ast.NodeIndex) = .empty,
+    import_expressions: std.ArrayList(parser.ast.NodeIndex) = .empty,
+    shorthand_properties: std.ArrayList(parser.ast.NodeIndex) = .empty,
 };
 
 export fn alloc(length: usize) [*]u8 {
@@ -84,19 +92,63 @@ fn transformAndSerialize(source: []const u8, filename: []const u8) ![]u8 {
         return serializeFailure(message);
     }
 
-    var semantic_visitor = SemanticVisitor{};
+    var semantic_visitor = SemanticVisitor{ .arena = tree.allocator() };
     const semantic = try parser.traverser.semantic.traverse(
         SemanticVisitor,
         &tree,
         &semantic_visitor,
     );
     const arena = tree.allocator();
-    var transformer = try Transformer.init(arena, source, filename, &tree, &semantic);
+    var transformer = try Transformer.init(
+        arena,
+        source,
+        filename,
+        &tree,
+        &semantic,
+        semantic_visitor.expression_nodes,
+    );
     const result = try transformer.run();
     return serializeSuccess(&result);
 }
 
-const SemanticVisitor = struct {};
+const SemanticVisitor = struct {
+    arena: std.mem.Allocator,
+    expression_nodes: ExpressionNodes = .{},
+
+    pub fn enter_meta_property(
+        self: *SemanticVisitor,
+        _: parser.ast.MetaProperty,
+        node: parser.ast.NodeIndex,
+        _: *parser.traverser.semantic.Ctx,
+    ) std.mem.Allocator.Error!parser.traverser.Action {
+        try self.expression_nodes.meta_properties.append(self.arena, node);
+        return .proceed;
+    }
+
+    pub fn enter_import_expression(
+        self: *SemanticVisitor,
+        _: parser.ast.ImportExpression,
+        node: parser.ast.NodeIndex,
+        _: *parser.traverser.semantic.Ctx,
+    ) std.mem.Allocator.Error!parser.traverser.Action {
+        try self.expression_nodes.import_expressions.append(self.arena, node);
+        return .proceed;
+    }
+
+    pub fn enter_object_property(
+        self: *SemanticVisitor,
+        property: parser.ast.ObjectProperty,
+        node: parser.ast.NodeIndex,
+        ctx: *parser.traverser.semantic.Ctx,
+    ) std.mem.Allocator.Error!parser.traverser.Action {
+        if (property.shorthand and
+            ctx.tree.data(property.value) == .identifier_reference)
+        {
+            try self.expression_nodes.shorthand_properties.append(self.arena, node);
+        }
+        return .proceed;
+    }
+};
 
 fn firstError(tree: *const parser.ast.Tree) ?parser.ast.Diagnostic {
     for (tree.diagnostics.items) |diagnostic| {
@@ -111,9 +163,11 @@ const Transformer = struct {
     filename: []const u8,
     tree: *const parser.ast.Tree,
     semantic: *const parser.semantic.Semantic,
+    expression_nodes: ExpressionNodes,
     imports: std.ArrayList([]const u8) = .empty,
     replacements: std.ArrayList(Replacement) = .empty,
     export_getters: std.ArrayList(ExportGetter) = .empty,
+    export_names: std.ArrayList([]const u8) = .empty,
     export_star_modules: std.ArrayList([]const u8) = .empty,
     live_bindings: []?[]const u8,
     module_count: u32 = 0,
@@ -124,17 +178,32 @@ const Transformer = struct {
         filename: []const u8,
         tree: *const parser.ast.Tree,
         semantic: *const parser.semantic.Semantic,
+        expression_nodes: ExpressionNodes,
     ) !Transformer {
         const live_bindings = try arena.alloc(?[]const u8, semantic.symbols.len);
         @memset(live_bindings, null);
-        return .{
+        var transformer: Transformer = .{
             .arena = arena,
             .source = source,
             .filename = filename,
             .tree = tree,
             .semantic = semantic,
+            .expression_nodes = expression_nodes,
             .live_bindings = live_bindings,
         };
+        const program = tree.data(tree.root).program;
+        const statement_count = tree.extra(program.body).len;
+        try transformer.imports.ensureTotalCapacity(arena, statement_count);
+        try transformer.export_getters.ensureTotalCapacity(arena, statement_count);
+        try transformer.export_names.ensureTotalCapacity(arena, statement_count);
+        const expression_count = expression_nodes.meta_properties.items.len +
+            expression_nodes.import_expressions.items.len +
+            expression_nodes.shorthand_properties.items.len;
+        try transformer.replacements.ensureTotalCapacity(
+            arena,
+            statement_count + expression_count,
+        );
+        return transformer;
     }
 
     fn run(self: *Transformer) !TransformResult {
@@ -144,6 +213,7 @@ const Transformer = struct {
         }
 
         var statement_ranges: std.ArrayList(Range) = .empty;
+        try statement_ranges.ensureTotalCapacity(self.arena, self.replacements.items.len);
         for (self.replacements.items) |replacement| {
             if (replacement.start < replacement.end) {
                 try statement_ranges.append(self.arena, .{
@@ -152,15 +222,21 @@ const Transformer = struct {
                 });
             }
         }
+        std.mem.sort(Range, statement_ranges.items, {}, rangeLessThan);
 
-        const covered_nodes = try self.arena.alloc(bool, self.tree.nodes.len);
-        @memset(covered_nodes, false);
-        var visitor = ExpressionVisitor{
-            .transformer = self,
-            .covered_nodes = covered_nodes,
-        };
-        try parser.traverser.basic.traverse(ExpressionVisitor, self.tree, &visitor);
-        try self.transformLiveBindingReferences(statement_ranges.items, covered_nodes);
+        var covered_nodes: std.ArrayList(parser.ast.NodeIndex) = .empty;
+        try covered_nodes.ensureTotalCapacity(
+            self.arena,
+            self.expression_nodes.shorthand_properties.items.len,
+        );
+        try self.transformCollectedExpressions(&covered_nodes);
+        std.mem.sort(
+            parser.ast.NodeIndex,
+            covered_nodes.items,
+            {},
+            nodeIndexLessThan,
+        );
+        try self.transformLiveBindingReferences(statement_ranges.items, covered_nodes.items);
 
         const exports = try self.sortedExportNames();
         const generated = try self.generateExportCode(exports);
@@ -174,9 +250,11 @@ const Transformer = struct {
             try self.addReplacement(insertion_offset, insertion_offset, insertion);
         }
 
-        const code = try self.applyReplacements(generated.epilogue);
+        std.mem.sort(Replacement, self.replacements.items, {}, replacementLessThan);
         return .{
-            .code = code,
+            .source = self.source,
+            .replacements = self.replacements.items,
+            .epilogue = generated.epilogue,
             .imports = self.imports.items,
             .exports = exports,
         };
@@ -372,19 +450,63 @@ const Transformer = struct {
     fn transformLiveBindingReferences(
         self: *Transformer,
         statement_ranges: []const Range,
-        covered_nodes: []const bool,
+        covered_nodes: []const parser.ast.NodeIndex,
     ) !void {
         for (self.live_bindings, 0..) |maybe_expression, symbol_index| {
             const expression = maybe_expression orelse continue;
             for (self.semantic.uses(@enumFromInt(symbol_index))) |reference_id| {
                 const reference = self.semantic.reference(reference_id);
                 if (reference.flags.write) continue;
-                if (covered_nodes[@intFromEnum(reference.node)]) continue;
+                if (containsNodeIndex(covered_nodes, reference.node)) continue;
 
                 const span = self.tree.span(reference.node);
                 if (spanInsideRanges(span, statement_ranges)) continue;
                 try self.addReplacement(span.start, span.end, expression);
             }
+        }
+    }
+
+    fn transformCollectedExpressions(
+        self: *Transformer,
+        covered_nodes: *std.ArrayList(parser.ast.NodeIndex),
+    ) !void {
+        for (self.expression_nodes.meta_properties.items) |node| {
+            const meta_property = self.tree.data(node).meta_property;
+            const meta = self.nodeName(meta_property.meta);
+            const property = self.nodeName(meta_property.property);
+            if (std.mem.eql(u8, meta, "import") and
+                std.mem.eql(u8, property, "meta"))
+            {
+                const span = self.tree.span(node);
+                try self.addReplacement(
+                    span.start,
+                    span.end,
+                    GARFISH_IMPORT_META ++ ".meta",
+                );
+            }
+        }
+
+        for (self.expression_nodes.import_expressions.items) |node| {
+            const span = self.tree.span(node);
+            try self.addReplacement(
+                span.start,
+                span.start + "import".len,
+                GARFISH_DYNAMIC_IMPORT,
+            );
+        }
+
+        for (self.expression_nodes.shorthand_properties.items) |node| {
+            const property = self.tree.data(node).object_property;
+            const expression = self.liveBindingOf(property.value) orelse continue;
+            const key = self.nodeName(property.value);
+            const replacement = try std.fmt.allocPrint(
+                self.arena,
+                "{s}: {s}",
+                .{ key, expression },
+            );
+            const span = self.tree.span(node);
+            try self.addReplacement(span.start, span.end, replacement);
+            try covered_nodes.append(self.arena, property.value);
         }
     }
 
@@ -426,24 +548,6 @@ const Transformer = struct {
         };
     }
 
-    fn applyReplacements(self: *Transformer, epilogue: []const u8) ![]const u8 {
-        std.mem.sort(Replacement, self.replacements.items, {}, replacementLessThan);
-
-        var output: std.ArrayList(u8) = .empty;
-        try output.ensureTotalCapacity(self.arena, self.source.len + epilogue.len);
-        var cursor: u32 = 0;
-        for (self.replacements.items) |replacement| {
-            if (replacement.end > self.source.len) return error.InvalidReplacementSpan;
-            if (replacement.start < cursor) return error.OverlappingReplacements;
-            try output.appendSlice(self.arena, self.source[cursor..replacement.start]);
-            try output.appendSlice(self.arena, replacement.text);
-            cursor = replacement.end;
-        }
-        try output.appendSlice(self.arena, self.source[cursor..]);
-        try output.appendSlice(self.arena, epilogue);
-        return output.toOwnedSlice(self.arena);
-    }
-
     fn exportInsertionOffset(
         self: *const Transformer,
         program: parser.ast.Program,
@@ -464,14 +568,8 @@ const Transformer = struct {
     }
 
     fn sortedExportNames(self: *Transformer) ![]const []const u8 {
-        var names: std.ArrayList([]const u8) = .empty;
-        for (self.export_getters.items) |getter| {
-            if (!containsString(names.items, getter.name)) {
-                try names.append(self.arena, getter.name);
-            }
-        }
-        std.mem.sort([]const u8, names.items, {}, lessThanString);
-        return names.toOwnedSlice(self.arena);
+        std.mem.sort([]const u8, self.export_names.items, {}, lessThanString);
+        return self.export_names.items;
     }
 
     fn collectDeclarationNames(
@@ -612,6 +710,9 @@ const Transformer = struct {
             .name = name,
             .expression = expression,
         });
+        if (!containsString(self.export_names.items, name)) {
+            try self.export_names.append(self.arena, name);
+        }
     }
 
     fn replaceNode(
@@ -638,71 +739,10 @@ const Transformer = struct {
     }
 };
 
-const ExpressionVisitor = struct {
-    transformer: *Transformer,
-    covered_nodes: []bool,
-
-    pub fn enter_meta_property(
-        self: *ExpressionVisitor,
-        meta_property: parser.ast.MetaProperty,
-        node: parser.ast.NodeIndex,
-        _: *parser.traverser.basic.Ctx,
-    ) std.mem.Allocator.Error!parser.traverser.Action {
-        const meta = self.transformer.nodeName(meta_property.meta);
-        const property = self.transformer.nodeName(meta_property.property);
-        if (std.mem.eql(u8, meta, "import") and std.mem.eql(u8, property, "meta")) {
-            const span = self.transformer.tree.span(node);
-            try self.transformer.addReplacement(
-                span.start,
-                span.end,
-                GARFISH_IMPORT_META ++ ".meta",
-            );
-        }
-        return .proceed;
-    }
-
-    pub fn enter_import_expression(
-        self: *ExpressionVisitor,
-        _: parser.ast.ImportExpression,
-        node: parser.ast.NodeIndex,
-        _: *parser.traverser.basic.Ctx,
-    ) std.mem.Allocator.Error!parser.traverser.Action {
-        const span = self.transformer.tree.span(node);
-        try self.transformer.addReplacement(
-            span.start,
-            span.start + "import".len,
-            GARFISH_DYNAMIC_IMPORT,
-        );
-        return .proceed;
-    }
-
-    pub fn enter_object_property(
-        self: *ExpressionVisitor,
-        property: parser.ast.ObjectProperty,
-        node: parser.ast.NodeIndex,
-        _: *parser.traverser.basic.Ctx,
-    ) std.mem.Allocator.Error!parser.traverser.Action {
-        if (!property.shorthand) return .proceed;
-        if (self.transformer.tree.data(property.value) != .identifier_reference) {
-            return .proceed;
-        }
-        const expression = self.transformer.liveBindingOf(property.value) orelse return .proceed;
-        const key = self.transformer.nodeName(property.value);
-        const replacement = try std.fmt.allocPrint(
-            self.transformer.arena,
-            "{s}: {s}",
-            .{ key, expression },
-        );
-        const span = self.transformer.tree.span(node);
-        try self.transformer.addReplacement(span.start, span.end, replacement);
-        self.covered_nodes[@intFromEnum(property.value)] = true;
-        return .skip;
-    }
-};
-
 fn serializeSuccess(result: *const TransformResult) ![]u8 {
+    const code_length = try transformedCodeLength(result);
     var payload_length: usize = 4;
-    payload_length = try addStringSize(payload_length, result.code);
+    payload_length = try addByteSliceSize(payload_length, code_length);
     payload_length = try std.math.add(usize, payload_length, 4);
     for (result.imports) |module_id| {
         payload_length = try addStringSize(payload_length, module_id);
@@ -716,13 +756,42 @@ fn serializeSuccess(result: *const TransformResult) ![]u8 {
     var offset: usize = 0;
     writeU32(output, &offset, payload_length);
     writeU32(output, &offset, 0);
-    writeString(output, &offset, result.code);
+    writeU32(output, &offset, code_length);
+    writeTransformedCode(output, &offset, result);
     writeU32(output, &offset, result.imports.len);
     for (result.imports) |module_id| writeString(output, &offset, module_id);
     writeU32(output, &offset, result.exports.len);
     for (result.exports) |export_name| writeString(output, &offset, export_name);
     std.debug.assert(offset == output.len);
     return output;
+}
+
+fn transformedCodeLength(result: *const TransformResult) !usize {
+    var length = try std.math.add(usize, result.source.len, result.epilogue.len);
+    var cursor: u32 = 0;
+    for (result.replacements) |replacement| {
+        if (replacement.end > result.source.len) return error.InvalidReplacementSpan;
+        if (replacement.start < cursor) return error.OverlappingReplacements;
+        length = try std.math.sub(usize, length, replacement.end - replacement.start);
+        length = try std.math.add(usize, length, replacement.text.len);
+        cursor = replacement.end;
+    }
+    return length;
+}
+
+fn writeTransformedCode(
+    output: []u8,
+    offset: *usize,
+    result: *const TransformResult,
+) void {
+    var cursor: u32 = 0;
+    for (result.replacements) |replacement| {
+        writeBytes(output, offset, result.source[cursor..replacement.start]);
+        writeBytes(output, offset, replacement.text);
+        cursor = replacement.end;
+    }
+    writeBytes(output, offset, result.source[cursor..]);
+    writeBytes(output, offset, result.epilogue);
 }
 
 fn serializeFailure(message: []const u8) ![]u8 {
@@ -737,7 +806,11 @@ fn serializeFailure(message: []const u8) ![]u8 {
 }
 
 fn addStringSize(total: usize, value: []const u8) !usize {
-    return std.math.add(usize, try std.math.add(usize, total, 4), value.len);
+    return addByteSliceSize(total, value.len);
+}
+
+fn addByteSliceSize(total: usize, length: usize) !usize {
+    return std.math.add(usize, try std.math.add(usize, total, 4), length);
 }
 
 fn writeU32(output: []u8, offset: *usize, value: usize) void {
@@ -748,6 +821,10 @@ fn writeU32(output: []u8, offset: *usize, value: usize) void {
 
 fn writeString(output: []u8, offset: *usize, value: []const u8) void {
     writeU32(output, offset, value.len);
+    writeBytes(output, offset, value);
+}
+
+fn writeBytes(output: []u8, offset: *usize, value: []const u8) void {
     const end = offset.* + value.len;
     @memcpy(output[offset.*..end], value);
     offset.* = end;
@@ -794,10 +871,37 @@ fn appendStringArray(
 }
 
 fn spanInsideRanges(span: parser.ast.Span, ranges: []const Range) bool {
-    for (ranges) |range| {
-        if (span.start >= range.start and span.end <= range.end) return true;
+    var low: usize = 0;
+    var high = ranges.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (ranges[middle].start <= span.start) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
     }
-    return false;
+    if (low == 0) return false;
+    return span.end <= ranges[low - 1].end;
+}
+
+fn containsNodeIndex(
+    values: []const parser.ast.NodeIndex,
+    target: parser.ast.NodeIndex,
+) bool {
+    var low: usize = 0;
+    var high = values.len;
+    const target_index = @intFromEnum(target);
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        const middle_index = @intFromEnum(values[middle]);
+        if (middle_index < target_index) {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+    return low < values.len and values[low] == target;
 }
 
 fn containsString(values: []const []const u8, target: []const u8) bool {
@@ -831,4 +935,17 @@ fn lessThanString(_: void, left: []const u8, right: []const u8) bool {
 fn replacementLessThan(_: void, left: Replacement, right: Replacement) bool {
     if (left.start != right.start) return left.start < right.start;
     return left.end < right.end;
+}
+
+fn rangeLessThan(_: void, left: Range, right: Range) bool {
+    if (left.start != right.start) return left.start < right.start;
+    return left.end < right.end;
+}
+
+fn nodeIndexLessThan(
+    _: void,
+    left: parser.ast.NodeIndex,
+    right: parser.ast.NodeIndex,
+) bool {
+    return @intFromEnum(left) < @intFromEnum(right);
 }

@@ -86,17 +86,18 @@ The generated transformer artifact is
 
 | Artifact | Size |
 | --- | ---: |
-| Raw wasm | 695,312 bytes (679.0 KiB) |
-| Gzip | 204,943 bytes (200.1 KiB) |
-| Brotli | 142,781 bytes (139.4 KiB) |
-| npm package | 228,429 bytes (223.1 KiB) |
+| Raw wasm | 814,831 bytes (795.7 KiB) |
+| Gzip | 242,946 bytes (237.3 KiB) |
+| Brotli | 167,236 bytes (163.3 KiB) |
+| npm package | 265,566 bytes (259.3 KiB) |
 
 The previous Rust/OXC artifact was 856,796 raw bytes, 325,842 gzip bytes, and
-243,532 Brotli bytes on the same branch. The Zig/Yuku transformer is 18.8%
-smaller raw, 37.1% smaller with gzip, and 41.4% smaller with Brotli. Semantic
+243,532 Brotli bytes on the same branch. The speed-optimized Zig/Yuku
+transformer is 4.9% smaller raw, 25.4% smaller with gzip, and 31.3% smaller with
+Brotli. Semantic
 analysis remains inside wasm because imported bindings need symbol-aware
 rewriting to preserve ESM live binding behavior after lowering.
-The packed npm artifact also drops from 349,565 bytes to 228,429 bytes, a 34.7%
+The packed npm artifact also drops from 349,565 bytes to 265,566 bytes, a 24.0%
 reduction.
 
 ## Why This Plugin Exists
@@ -123,8 +124,9 @@ pnpm build
 ```
 
 The build requires Zig 0.16.0. `pnpm build` first compiles the Yuku-backed Zig
-transformer to `wasm32-freestanding`, packages the browser binding in `pkg/`,
-then builds the TypeScript Garfish wrapper into `dist/`.
+transformer to `wasm32-freestanding` with Zig's speed-first `ReleaseFast`
+profile, packages the browser binding in `pkg/`, then builds the TypeScript
+Garfish wrapper into `dist/`.
 
 ## Test
 
@@ -153,9 +155,9 @@ pnpm benchmark:update
 `pnpm benchmark` measures the wasm transform path against fixed ESM fixtures.
 `pnpm benchmark:parse` measures Yuku's parser-only wasm path against the same
 4,319-byte large-module fixture used to baseline the previous Rust/OXC parser.
-The same-process migration A/B measured 0.0239 ms for Zig/Yuku versus 0.0458 ms
-for Rust/OXC, a 47.8% reduction in mean parse latency; full details are in
-`benchmarks/parse.md`.
+The same-process migration A/B measured 0.0163 ms for Zig/Yuku versus 0.0458 ms
+for Rust/OXC, a 64.4% reduction in mean parse latency and a 173.4% throughput
+increase; full details are in `benchmarks/parse.md`.
 `pnpm benchmark:update` refreshes both `benchmarks/transform.md` and the table
 below.
 
@@ -163,11 +165,11 @@ below.
 
 | Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `small-live-bindings` | 255 | 0.007 ms | 0.007 ms | 0.009 ms | 139,392 ops/sec | 411,049 |
-| `medium-dashboard` | 1,247 | 0.039 ms | 0.037 ms | 0.102 ms | 26,977 ops/sec | 77,551 |
-| `large-re-export` | 5,314 | 0.130 ms | 0.130 ms | 0.212 ms | 7,806 ops/sec | 23,159 |
+| `small-live-bindings` | 255 | 0.005 ms | 0.005 ms | 0.005 ms | 212,806 ops/sec | 1,060,091 |
+| `medium-dashboard` | 1,247 | 0.025 ms | 0.024 ms | 0.033 ms | 40,850 ops/sec | 197,797 |
+| `large-re-export` | 5,314 | 0.083 ms | 0.083 ms | 0.090 ms | 12,052 ops/sec | 60,174 |
 
-Measured on Node v22.23.1 with `BENCH_TIME_MS=3000` and `BENCH_WARMUP_MS=500`.
+Measured on Node v22.23.1 with `BENCH_TIME_MS=5000` and `BENCH_WARMUP_MS=1000`.
 
 <!-- benchmark-results:end -->
 
