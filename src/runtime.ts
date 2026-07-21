@@ -19,6 +19,7 @@ import {
   type WasmImportInfo,
 } from './wasm';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
+import type { GarfishEsModulePreloadCrossOrigin } from './preloads';
 
 const PACKAGE_VERSION = '__PACKAGE_VERSION__';
 const TRANSFORMER_VERSION = `garfish-wasm-esm-plugin@${PACKAGE_VERSION}:yuku-zig-wasm`;
@@ -128,6 +129,7 @@ export type RuntimeExecCode = (
 interface ModuleLoadRecord {
   storeId: string;
   requestUrl: string;
+  crossOrigin?: GarfishEsModulePreloadCrossOrigin;
   promise?: Promise<CompiledModuleResource>;
   resource?: CompiledModuleResource;
 }
@@ -551,12 +553,21 @@ export class Runtime {
       .filter(Boolean) as Array<{ storeId: string; requestUrl: string }>;
   }
 
-  private loadJavaScript(url: string) {
+  private loadJavaScript(
+    url: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+    defaultContentType?: string,
+  ) {
     return new Promise<CacheValue<JavaScriptManager>>((resolve, reject) => {
       const run = () => {
         this.activeLoads++;
         this.loader
-          .load<JavaScriptManager>({ scope: this.options.scope, url })
+          .load<JavaScriptManager>({
+            scope: this.options.scope,
+            url,
+            crossOrigin,
+            defaultContentType,
+          })
           .then(resolve, reject)
           .finally(() => {
             this.activeLoads--;
@@ -572,7 +583,11 @@ export class Runtime {
     });
   }
 
-  private getOrCreateLoad(storeId: string, requestUrl: string) {
+  private getOrCreateLoad(
+    storeId: string,
+    requestUrl: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+  ) {
     const existing = this.loadRegistry[storeId];
     if (existing) return existing;
 
@@ -587,6 +602,7 @@ export class Runtime {
     const load: ModuleLoadRecord = (this.loadRegistry[storeId] = {
       storeId,
       requestUrl,
+      crossOrigin,
     });
 
     load.promise = this.fetchAndCompileLoad(load).catch((error) => {
@@ -602,7 +618,10 @@ export class Runtime {
 
   private async fetchAndCompileLoad(load: ModuleLoadRecord) {
     const fetchStart = now();
-    const { resourceManager } = await this.loadJavaScript(load.requestUrl);
+    const { resourceManager } = await this.loadJavaScript(
+      load.requestUrl,
+      load.crossOrigin,
+    );
     const fetchMs = now() - fetchStart;
 
     if (!resourceManager) {
@@ -667,7 +686,9 @@ export class Runtime {
             load.storeId,
             result.value.realUrl,
           ).forEach(({ storeId, requestUrl }) => {
-            enqueue(this.getOrCreateLoad(storeId, requestUrl));
+            enqueue(
+              this.getOrCreateLoad(storeId, requestUrl, load.crossOrigin),
+            );
           });
         } catch (error) {
           if (!hasGraphError) {
@@ -689,11 +710,31 @@ export class Runtime {
   private compileAndFetchCode(
     storeId: string,
     url?: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
   ): void | Promise<ModuleResource> {
     if (this.resources[storeId]) return;
     if (!url) url = storeId;
-    const load = this.getOrCreateLoad(storeId, url);
+    const load = this.getOrCreateLoad(storeId, url, crossOrigin);
     return this.loadModuleGraph(load);
+  }
+
+  async preloadByUrl(
+    storeId: string,
+    requestUrl?: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+  ) {
+    await this.compileAndFetchCode(
+      storeId,
+      requestUrl || storeId,
+      crossOrigin,
+    );
+  }
+
+  async preloadScript(
+    url: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+  ) {
+    await this.loadJavaScript(url, crossOrigin, 'text/javascript');
   }
 
   import(storeId: string) {

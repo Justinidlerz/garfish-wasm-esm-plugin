@@ -22,3 +22,9 @@ export type {
   WasmInitInput,
   WasmTransformResult,
 } from './wasm';
+export { GARFISH_ES_MODULE_PRELOADS_SYMBOL } from './preloads';
+export type {
+  GarfishEsModulePreloadCrossOrigin,
+  GarfishEsModulePreloadDescriptor,
+  GarfishEsModulePreloadRel,
+} from './preloads';
