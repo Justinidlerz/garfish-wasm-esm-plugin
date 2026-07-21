@@ -1,0 +1,17 @@
+.{
+    .name = .garfish_wasm_esm_plugin,
+    .version = "0.1.0",
+    .dependencies = .{
+        .yuku = .{
+            .url = "git+https://github.com/yuku-toolchain/yuku.git#2b032ffb244d84c0c3d662a5715fa5f59622fa11",
+            .hash = "yuku-0.3.0-m6ranmyzEwDmtGyYVZEZnkEKzQCQX2VcYSRlqpcAUPIC",
+        },
+    },
+    .minimum_zig_version = "0.16.0",
+    .fingerprint = 0x9ab3e673123df72c,
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}

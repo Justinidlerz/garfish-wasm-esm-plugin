@@ -1,7 +1,15 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Bench } from 'tinybench';
-import initWasm, { transform } from '../pkg/garfish_wasm_esm_plugin.js';
+
+const wasmPackagePath = process.env.WASM_PACKAGE_PATH
+  ? pathToFileURL(resolve(process.env.WASM_PACKAGE_PATH)).href
+  : new URL('../pkg/garfish_wasm_esm_plugin.js', import.meta.url).href;
+const wasmBinaryPath = process.env.WASM_BINARY_PATH
+  ? resolve(process.env.WASM_BINARY_PATH)
+  : resolve('pkg/garfish_wasm_esm_plugin_bg.wasm');
+const { default: initWasm, transform } = await import(wasmPackagePath);
 
 const benchmarkBlockStart = '<!-- benchmark-results:start -->';
 const benchmarkBlockEnd = '<!-- benchmark-results:end -->';
@@ -93,7 +101,7 @@ const fixtures = [
 ];
 
 await initWasm({
-  module_or_path: readFileSync(resolve('pkg/garfish_wasm_esm_plugin_bg.wasm')),
+  module_or_path: readFileSync(wasmBinaryPath),
 });
 
 const bench = new Bench({

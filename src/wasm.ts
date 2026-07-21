@@ -1,5 +1,5 @@
 import initWasm, {
-  transform as transformWithOxc,
+  transform as transformWithYuku,
 } from '../pkg/garfish_wasm_esm_plugin.js';
 
 export type WasmInitInput = Parameters<typeof initWasm>[0];
@@ -44,5 +44,5 @@ export async function transformModuleWithWasm(
   input?: WasmInitInput,
 ) {
   await initGarfishEsModuleWasm(input);
-  return transformWithOxc(code, filename) as WasmTransformResult;
+  return transformWithYuku(code, filename) as WasmTransformResult;
 }

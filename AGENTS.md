@@ -13,17 +13,16 @@
 ## Project Shape
 
 - This package exports a Garfish plugin that rewrites browser-loaded ESM through
-  a Rust/OXC WebAssembly transformer.
-- Rust source lives in `src/lib.rs`; TypeScript runtime/plugin code lives in
-  `src/*.ts`.
-- `pkg/`, `dist/`, `coverage/`, `target/`, `node_modules/`, `examples/vite/dist/`,
-  and `log/` are generated output and should not be committed.
-- `Cargo.lock` is intentionally ignored for this wasm package unless the user
-  explicitly asks to change that policy.
+  a Zig/Yuku WebAssembly transformer.
+- Zig source lives in `src/transformer.zig`; TypeScript runtime/plugin code lives
+  in `src/*.ts`; browser bindings live in `wasm/`.
+- `pkg/`, `dist/`, `coverage/`, `.zig-cache/`, `zig-out/`, `zig-pkg/`,
+  `node_modules/`, `examples/vite/dist/`, and `log/` are generated output and
+  should not be committed.
 
 ## Implementation Rules
 
-- Prefer OXC AST and semantic APIs for import/export/module analysis.
+- Prefer Yuku AST and semantic APIs for import/export/module analysis.
 - Avoid hand-parsing JavaScript source text. Span-based replacements are
   acceptable only for minimal code patching after the AST/semantic layer has
   identified the exact node or reference.
@@ -41,6 +40,7 @@
 - Use `pnpm test` for Vitest behavior tests.
 - Use `pnpm test:coverage` to generate Vitest coverage output for Codecov.
 - Use `pnpm benchmark` for transform benchmarks.
+- Use `pnpm benchmark:parse` for parser benchmarks.
 - Use `pnpm typecheck` for TypeScript validation.
 - Use `pnpm build` before release or publish-related changes.
 - Use `pnpm example:build` when changes may affect the Vite/Garfish example.

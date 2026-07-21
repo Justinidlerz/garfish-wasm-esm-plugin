@@ -1,6 +1,6 @@
-/target
-**/*.rs.bk
-Cargo.lock
+.zig-cache/
+zig-out/
+zig-pkg/
 bin/
 dist/
 coverage/
@@ -8,4 +8,3 @@ examples/vite/dist/
 log/
 node_modules/
 pkg/
-wasm-pack.log

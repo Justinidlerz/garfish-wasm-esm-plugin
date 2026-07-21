@@ -3,8 +3,8 @@
 [![codecov](https://codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin/branch/master/graph/badge.svg)](https://app.codecov.io/gh/Justinidlerz/garfish-wasm-esm-plugin)
 
 Garfish plugin for running `<script type="module">` resources through a browser
-WebAssembly transformer. The wasm core uses OXC to parse ESM syntax and rewrites
-imports/exports into the Garfish runtime helpers.
+WebAssembly transformer. The wasm core uses Yuku's Zig parser and semantic model
+to rewrite imports/exports into the Garfish runtime helpers.
 
 ## Usage
 
@@ -86,13 +86,19 @@ The generated transformer artifact is
 
 | Artifact | Size |
 | --- | ---: |
-| Raw wasm | 857,617 bytes (837.5 KiB) |
-| Gzip | 326,597 bytes (318.9 KiB) |
+| Raw wasm | 814,831 bytes (795.7 KiB) |
+| Gzip | 242,946 bytes (237.3 KiB) |
+| Brotli | 167,236 bytes (163.3 KiB) |
+| npm package | 265,566 bytes (259.3 KiB) |
 
-The size comes from bundling OXC parser and semantic analysis into the browser
-runtime. The semantic pass is intentional because imported bindings need symbol
-aware rewriting to preserve ESM live binding behavior after the code is lowered
-to Garfish runtime helpers.
+The previous Rust/OXC artifact was 856,796 raw bytes, 325,842 gzip bytes, and
+243,532 Brotli bytes on the same branch. The speed-optimized Zig/Yuku
+transformer is 4.9% smaller raw, 25.4% smaller with gzip, and 31.3% smaller with
+Brotli. Semantic
+analysis remains inside wasm because imported bindings need symbol-aware
+rewriting to preserve ESM live binding behavior after lowering.
+The packed npm artifact also drops from 349,565 bytes to 265,566 bytes, a 24.0%
+reduction.
 
 ## Why This Plugin Exists
 
@@ -105,7 +111,7 @@ source after Garfish has fetched the HTML entry and its scripts.
 This package keeps that work in a Garfish plugin boundary:
 
 - wasm runs in the browser and parses the fetched module source on demand;
-- OXC AST and semantic data are used instead of regex or text-only rewriting;
+- Yuku AST and semantic data are used instead of regex or text-only rewriting;
 - imports, exports, `import.meta`, dynamic `import()`, import maps, and Garfish
   externals are handled by the same runtime;
 - live bindings survive the CommonJS-like helper lowering used by the plugin.
@@ -117,8 +123,10 @@ pnpm install
 pnpm build
 ```
 
-`pnpm build` first runs `wasm-pack build --target web --out-dir pkg`, then builds
-the TypeScript Garfish wrapper into `dist`.
+The build requires Zig 0.16.0. `pnpm build` first compiles the Yuku-backed Zig
+transformer to `wasm32-freestanding` with Zig's speed-first `ReleaseFast`
+profile, packages the browser binding in `pkg/`, then builds the TypeScript
+Garfish wrapper into `dist/`.
 
 ## Test
 
@@ -140,10 +148,16 @@ the latest benchmark table.
 
 ```sh
 pnpm benchmark
+pnpm benchmark:parse
 pnpm benchmark:update
 ```
 
 `pnpm benchmark` measures the wasm transform path against fixed ESM fixtures.
+`pnpm benchmark:parse` measures Yuku's parser-only wasm path against the same
+4,319-byte large-module fixture used to baseline the previous Rust/OXC parser.
+The same-process migration A/B measured 0.0163 ms for Zig/Yuku versus 0.0458 ms
+for Rust/OXC, a 64.4% reduction in mean parse latency and a 173.4% throughput
+increase; full details are in `benchmarks/parse.md`.
 `pnpm benchmark:update` refreshes both `benchmarks/transform.md` and the table
 below.
 
@@ -151,13 +165,14 @@ below.
 
 | Fixture | Source bytes | Mean | p75 | p99 | Throughput | Samples |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `small-live-bindings` | 255 | 0.011 ms | 0.011 ms | 0.014 ms | 90,876 ops/sec | 90,215 |
-| `medium-dashboard` | 1,247 | 0.064 ms | 0.063 ms | 0.078 ms | 15,850 ops/sec | 15,707 |
-| `large-re-export` | 5,314 | 0.250 ms | 0.250 ms | 0.348 ms | 4,010 ops/sec | 3,993 |
+| `small-live-bindings` | 255 | 0.005 ms | 0.005 ms | 0.005 ms | 212,806 ops/sec | 1,060,091 |
+| `medium-dashboard` | 1,247 | 0.025 ms | 0.024 ms | 0.033 ms | 40,850 ops/sec | 197,797 |
+| `large-re-export` | 5,314 | 0.083 ms | 0.083 ms | 0.090 ms | 12,052 ops/sec | 60,174 |
 
-Measured on Node v22.23.1 with `BENCH_TIME_MS=1000` and `BENCH_WARMUP_MS=250`.
+Measured on Node v22.23.1 with `BENCH_TIME_MS=5000` and `BENCH_WARMUP_MS=1000`.
 
 <!-- benchmark-results:end -->
+
 
 
 ## Vite Example
