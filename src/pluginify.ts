@@ -18,6 +18,7 @@ import {
 export interface Options {
   excludes?: Array<string> | ((name: string) => boolean);
   compileCache?: boolean | RuntimeCompileCache;
+  runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
   garfishExternals?: RuntimeExternalMatcher;
   wasm?: WasmInitInput;
@@ -222,6 +223,7 @@ export function GarfishEsModule(options: Options = {}) {
           const runtime = new Runtime({
             scope: name,
             compileCache: options.compileCache,
+            runtimeCompile: options.runtimeCompile,
             metrics: options.metrics,
             wasm: options.wasm,
             garfishExternals: Garfish.externals,

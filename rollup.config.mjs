@@ -28,6 +28,9 @@ const injectPackageVersion = () => ({
 export default {
   input: {
     index: 'src/index.ts',
+    compiler: 'src/compiler.ts',
+    'runtime-entry': 'src/runtime-entry.ts',
+    vite: 'src/vite.ts',
   },
   output: {
     dir: 'dist',

@@ -1,7 +1,7 @@
 {
   "name": "garfish-wasm-esm-plugin",
   "version": "0.1.3",
-  "description": "Garfish ES module runtime plugin backed by a Yuku/Zig WebAssembly transformer.",
+  "description": "Build-time compiler and Garfish runtime for Yuku/Zig-transformed ES modules.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
@@ -22,6 +22,21 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
+    },
+    "./compiler": {
+      "types": "./dist/compiler.d.ts",
+      "import": "./dist/compiler.js",
+      "default": "./dist/compiler.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime-entry.d.ts",
+      "import": "./dist/runtime-entry.js",
+      "default": "./dist/runtime-entry.js"
+    },
+    "./vite": {
+      "types": "./dist/vite.d.ts",
+      "import": "./dist/vite.js",
+      "default": "./dist/vite.js"
     }
   },
   "files": [
@@ -65,7 +80,13 @@
     "@jspm/import-map": "^1.5.0"
   },
   "peerDependencies": {
-    "garfish": "^1.19.8"
+    "garfish": "^1.19.8",
+    "vite": "^5.0.0 || ^6.0.0 || ^7.0.0"
+  },
+  "peerDependenciesMeta": {
+    "vite": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@changesets/cli": "^2.31.0",

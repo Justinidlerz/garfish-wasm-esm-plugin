@@ -1,18 +1,10 @@
-export {
-  Runtime,
-  Runtime as default,
-  clearRuntimeCompileCache,
-} from './runtime';
+export * from './runtime-entry';
+export { default } from './runtime-entry';
+export { compileGarfishModule } from './compiler';
 export type {
-  ModuleResource,
-  RuntimeCompileCache,
-  RuntimeCompileMetric,
-  RuntimeExternalMatcher,
-  RuntimeMetricsReporter,
-  RuntimeOptions,
-} from './runtime';
-export { GarfishEsModule } from './pluginify';
-export type { Options as GarfishEsModuleOptions } from './pluginify';
+  CompileGarfishModuleOptions,
+  GarfishModuleTransformResult,
+} from './compiler';
 export {
   initGarfishEsModuleWasm,
   transformModuleWithWasm,

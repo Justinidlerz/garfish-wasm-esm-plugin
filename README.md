@@ -23,6 +23,95 @@ The plugin only handles scripts that Garfish already marks as module scripts.
 For Vite-style sub applications, keep using an HTML entry with
 `<script type="module">`.
 
+## Build-time compilation
+
+The compiler entry can turn an emitted ESM module into a JavaScript artifact
+that the runtime consumes without loading the wasm transformer:
+
+```ts
+import { compileGarfishModule } from 'garfish-wasm-esm-plugin/compiler';
+
+const artifact = await compileGarfishModule(
+  emittedChunk.code,
+  emittedChunk.fileName,
+);
+
+// Emit `artifact` into the Garfish build using the same relative file name.
+```
+
+The artifact is a normal JavaScript file. Its leading comment contains the
+static import and export information that the compiler already produced, so no
+separate manifest is required. The rest of the file is the transformed module
+body and runs through the existing Garfish sandbox execution path.
+
+For dual output, keep matching directory structures so relative module
+specifiers resolve without a runtime URL convention:
+
+```text
+dist/esm/assets/main.js
+dist/esm/assets/dependency.js
+dist/garfish/assets/main.js
+dist/garfish/assets/dependency.js
+```
+
+Import the browser runtime from the runtime-only entry and disable fallback
+compilation after the Garfish tree is complete:
+
+```ts
+import Garfish from 'garfish';
+import { GarfishEsModule } from 'garfish-wasm-esm-plugin/runtime';
+
+Garfish.run({
+  plugins: [
+    GarfishEsModule({
+      runtimeCompile: false,
+    }),
+  ],
+});
+```
+
+`runtimeCompile` defaults to `true` for compatibility. Precompiled artifacts
+always bypass wasm transformation. When the option is `true`, a plain ESM
+module can still fall back to the existing browser compilation path; when it is
+`false`, loading a plain ESM module fails with an explicit error.
+
+### Vite plugin
+
+The Vite entry keeps the original ESM output and emits a precompiled Garfish
+mirror during the same build:
+
+```ts
+import { defineConfig } from 'vite';
+import { garfishPrecompile } from 'garfish-wasm-esm-plugin/vite';
+
+export default defineConfig({
+  plugins: [
+    garfishPrecompile({
+      outDir: 'garfish',
+      htmlEntries: ['subapp.html'],
+    }),
+  ],
+});
+```
+
+For every JavaScript chunk, the plugin emits a compiled asset under the same
+relative path below `garfish/`. Non-HTML assets are mirrored by default so
+relative asset URLs keep working. Listed HTML entries are also mirrored and
+their absolute Vite asset URLs are redirected to the Garfish tree. Original ESM
+chunks and HTML remain unchanged.
+
+```text
+dist/assets/main.js
+dist/subapp.html
+dist/garfish/assets/main.js
+dist/garfish/subapp.html
+```
+
+The generated Garfish HTML keeps its module script tags, so load it with
+`GarfishEsModule({ runtimeCompile: false })`. Generated sourcemaps are not
+supported yet because the precompiled code needs a new mapping rather than a
+copy of Vite's ESM map.
+
 ## Supported Resolution
 
 This version supports both HTML import maps and Garfish externals at runtime.

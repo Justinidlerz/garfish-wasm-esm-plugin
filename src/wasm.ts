@@ -1,12 +1,11 @@
 import initWasm, {
   transform as transformWithYuku,
 } from '../pkg/garfish_wasm_esm_plugin.js';
+import type { ModuleImportInfo } from './compiled-module';
 
 export type WasmInitInput = Parameters<typeof initWasm>[0];
 
-export interface WasmImportInfo {
-  moduleId: string;
-}
+export type WasmImportInfo = ModuleImportInfo;
 
 export interface WasmTransformResult {
   code: string;
