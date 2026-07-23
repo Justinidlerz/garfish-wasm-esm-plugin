@@ -14,10 +14,12 @@ import {
 } from '@garfish/loader';
 import { ImportMap } from '@jspm/import-map';
 import {
-  transformModuleWithWasm,
   type WasmInitInput,
-  type WasmImportInfo,
 } from './wasm';
+import {
+  readCompiledModuleArtifact,
+  type ModuleImportInfo,
+} from './compiled-module';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
 import type { GarfishEsModulePreloadCrossOrigin } from './preloads';
 
@@ -107,14 +109,14 @@ export interface RuntimeCompileCache {
 
 export interface ModuleResource {
   code: string;
-  imports?: WasmImportInfo[];
+  imports?: ModuleImportInfo[];
   storeId: string;
   realUrl: string;
   exports: string[];
 }
 
 interface CompiledModuleResource extends ModuleResource {
-  imports: WasmImportInfo[];
+  imports: ModuleImportInfo[];
 }
 
 const hasImportMetadata = (
@@ -149,6 +151,7 @@ export interface RuntimeOptions {
   scope: string;
   loaderOptions?: LoaderOptions;
   compileCache?: boolean | RuntimeCompileCache;
+  runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
   importMaps?: Array<RuntimeImportMap>;
   importMapUrl?: string | URL;
@@ -212,12 +215,14 @@ export class Runtime {
       scope: 'default',
       loaderOptions: {},
       compileCache: true,
+      runtimeCompile: true,
     };
     this.options = isPlainObject(options)
       ? deepMerge(defaultOptions, options)
       : defaultOptions;
     if (isPlainObject(options)) {
       preserveOpaqueOption(this.options, options, 'compileCache');
+      preserveOpaqueOption(this.options, options, 'runtimeCompile');
       preserveOpaqueOption(this.options, options, 'execCode');
       preserveOpaqueOption(this.options, options, 'garfishExternalMatcher');
       preserveOpaqueOption(this.options, options, 'garfishExternals');
@@ -473,6 +478,21 @@ export class Runtime {
     const cacheKey = this.getCompileCacheKey(code, storeId, baseRealUrl);
 
     try {
+      const precompiledOutput = readCompiledModuleArtifact(code);
+      if (precompiledOutput) {
+        return {
+          ...precompiledOutput,
+          storeId,
+          realUrl: baseRealUrl,
+        };
+      }
+
+      if (this.options.runtimeCompile === false) {
+        throw new Error(
+          `Module '${storeId}' is not precompiled and runtime compilation is disabled`,
+        );
+      }
+
       let output: CompiledModuleResource | undefined;
 
       if (compileCache) {
@@ -520,6 +540,7 @@ export class Runtime {
     metric: RuntimeCompileMetric,
   ) {
     const transformStart = now();
+    const { transformModuleWithWasm } = await import('./wasm');
     const output = await transformModuleWithWasm(
       code,
       storeId,

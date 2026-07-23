@@ -1,11 +1,18 @@
 import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
+import { garfishPrecompile } from '../../src/vite';
 
 const exampleRoot = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 
 export default defineConfig({
   root: exampleRoot,
+  plugins: [
+    garfishPrecompile({
+      copyAssets: false,
+      htmlEntries: ['subapp.html'],
+    }),
+  ],
   resolve: {
     alias: {
       'garfish-wasm-esm-plugin': fileURLToPath(
