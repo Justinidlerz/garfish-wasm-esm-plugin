@@ -1,4 +1,4 @@
-import { evalWithEnv } from '@garfish/utils';
+import { evalWithEnv, warn } from '@garfish/utils';
 import type { Text } from '@garfish/utils';
 import type { interfaces } from '@garfish/core';
 import { Runtime } from './runtime';
@@ -10,10 +10,15 @@ import type {
   RuntimeMetricsReporter,
 } from './runtime';
 import type { WasmInitInput } from './wasm';
+import {
+  GARFISH_ES_MODULE_PRELOADS_SYMBOL,
+  type GarfishEsModulePreloadDescriptor,
+} from './preloads';
 
 export interface Options {
   excludes?: Array<string> | ((name: string) => boolean);
   compileCache?: boolean | RuntimeCompileCache;
+  runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
   garfishExternals?: RuntimeExternalMatcher;
   wasm?: WasmInitInput;
@@ -70,6 +75,74 @@ const getImportMaps = (
   });
 
   return { importMaps, importMapUrl };
+};
+
+type PreloadEntryManager = interfaces.TemplateManager & {
+  [GARFISH_ES_MODULE_PRELOADS_SYMBOL]?: GarfishEsModulePreloadDescriptor[];
+};
+
+const startPreloads = (
+  appInfo: interfaces.AppInfo,
+  appInstance: interfaces.App,
+  runtime: Runtime,
+) => {
+  const entryManager = appInstance.entryManager as PreloadEntryManager;
+  const preloads = entryManager[GARFISH_ES_MODULE_PRELOADS_SYMBOL];
+  if (!Array.isArray(preloads) || preloads.length === 0) return;
+
+  const pageUrl = location.href;
+  let entryUrl: URL;
+
+  try {
+    entryUrl = new URL(entryManager.url || appInfo.entry || pageUrl, pageUrl);
+  } catch (error) {
+    warn(
+      `[${appInfo.name}] Failed to resolve ESM preload base URL: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return;
+  }
+
+  preloads.forEach((preload) => {
+    let resolvedUrl: string | undefined;
+
+    try {
+      resolvedUrl = new URL(preload.href, entryUrl).href;
+      let task: Promise<void>;
+
+      switch (preload.rel) {
+        case 'modulepreload':
+          task = runtime.preloadByUrl(
+            resolvedUrl,
+            resolvedUrl,
+            preload.crossOrigin,
+          );
+          break;
+        case 'preload':
+        case 'prefetch':
+          task = runtime.preloadScript(resolvedUrl, preload.crossOrigin);
+          break;
+        default:
+          warn(`[${appInfo.name}] Unsupported ESM preload rel.`);
+          return;
+      }
+
+      void task.catch((error) => {
+        warn(
+          `[${appInfo.name}] Failed to ${preload.rel} "${resolvedUrl}": ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    } catch (error) {
+      warn(
+        `[${appInfo.name}] Failed to ${preload.rel} "${
+          resolvedUrl || preload.href
+        }": ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  });
 };
 
 const patchPromiseAwareQueue = (queue?: QueueLike) => {
@@ -150,6 +223,7 @@ export function GarfishEsModule(options: Options = {}) {
           const runtime = new Runtime({
             scope: name,
             compileCache: options.compileCache,
+            runtimeCompile: options.runtimeCompile,
             metrics: options.metrics,
             wasm: options.wasm,
             garfishExternals: Garfish.externals,
@@ -225,6 +299,8 @@ export function GarfishEsModule(options: Options = {}) {
               sandbox?.execScript(code, env, url, execOptions);
             }
           };
+
+          startPreloads(appInfo, appInstance, runtime);
         }
       },
 
