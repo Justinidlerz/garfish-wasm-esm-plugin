@@ -1,5 +1,14 @@
 # garfish-wasm-esm-plugin
 
+## 0.2.0
+
+### Minor Changes
+
+- b9b00bf: Add circular module graph loading, per-Runtime dependency rebuilding, entry
+  preload consumption, build-time OXC compilation, runtime-only and Vite package
+  entries, mirrored Garfish build output, and an option to disable browser
+  compilation.
+
 ## 0.1.3
 
 ### Patch Changes
