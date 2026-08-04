@@ -14,11 +14,14 @@ import {
 } from '@garfish/loader';
 import { ImportMap } from '@jspm/import-map';
 import {
-  transformModuleWithWasm,
   type WasmInitInput,
-  type WasmTransformResult,
 } from './wasm';
+import {
+  readCompiledModuleArtifact,
+  type ModuleImportInfo,
+} from './compiled-module';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
+import type { GarfishEsModulePreloadCrossOrigin } from './preloads';
 
 const PACKAGE_VERSION = '__PACKAGE_VERSION__';
 const TRANSFORMER_VERSION = `garfish-wasm-esm-plugin@${PACKAGE_VERSION}:oxc-wasm`;
@@ -106,10 +109,19 @@ export interface RuntimeCompileCache {
 
 export interface ModuleResource {
   code: string;
+  imports?: ModuleImportInfo[];
   storeId: string;
   realUrl: string;
   exports: string[];
 }
+
+interface CompiledModuleResource extends ModuleResource {
+  imports: ModuleImportInfo[];
+}
+
+const hasImportMetadata = (
+  output: ModuleResource,
+): output is CompiledModuleResource => Array.isArray(output.imports);
 
 export type RuntimeExecCode = (
   output: ModuleResource,
@@ -119,8 +131,9 @@ export type RuntimeExecCode = (
 interface ModuleLoadRecord {
   storeId: string;
   requestUrl: string;
-  promise?: Promise<ModuleResource>;
-  resource?: ModuleResource;
+  crossOrigin?: GarfishEsModulePreloadCrossOrigin;
+  promise?: Promise<CompiledModuleResource>;
+  resource?: CompiledModuleResource;
 }
 
 export interface RuntimeImportMap {
@@ -138,6 +151,7 @@ export interface RuntimeOptions {
   scope: string;
   loaderOptions?: LoaderOptions;
   compileCache?: boolean | RuntimeCompileCache;
+  runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
   importMaps?: Array<RuntimeImportMap>;
   importMapUrl?: string | URL;
@@ -201,12 +215,14 @@ export class Runtime {
       scope: 'default',
       loaderOptions: {},
       compileCache: true,
+      runtimeCompile: true,
     };
     this.options = isPlainObject(options)
       ? deepMerge(defaultOptions, options)
       : defaultOptions;
     if (isPlainObject(options)) {
       preserveOpaqueOption(this.options, options, 'compileCache');
+      preserveOpaqueOption(this.options, options, 'runtimeCompile');
       preserveOpaqueOption(this.options, options, 'execCode');
       preserveOpaqueOption(this.options, options, 'garfishExternalMatcher');
       preserveOpaqueOption(this.options, options, 'garfishExternals');
@@ -462,32 +478,55 @@ export class Runtime {
     const cacheKey = this.getCompileCacheKey(code, storeId, baseRealUrl);
 
     try {
+      const precompiledOutput = readCompiledModuleArtifact(code);
+      if (precompiledOutput) {
+        return {
+          ...precompiledOutput,
+          storeId,
+          realUrl: baseRealUrl,
+        };
+      }
+
+      if (this.options.runtimeCompile === false) {
+        throw new Error(
+          `Module '${storeId}' is not precompiled and runtime compilation is disabled`,
+        );
+      }
+
+      let output: CompiledModuleResource | undefined;
+
       if (compileCache) {
         const cached = compileCache.get(cacheKey);
         if (cached) {
-          metric.cacheHit = true;
-          const output = await cached;
-          return { ...output, storeId, realUrl: baseRealUrl };
+          const cachedOutput = await cached;
+          if (hasImportMetadata(cachedOutput)) {
+            metric.cacheHit = true;
+            output = cachedOutput;
+          } else {
+            compileCache.delete(cacheKey);
+          }
         }
+
+        if (!output) {
+          const compilePromise = this.compileModule(
+            code,
+            storeId,
+            baseRealUrl,
+            metric,
+          ).catch((error) => {
+            compileCache.delete(cacheKey);
+            throw error;
+          });
+          compileCache.set(cacheKey, compilePromise);
+          output = await compilePromise;
+          compileCache.set(cacheKey, output);
+        }
+      } else {
+        output = await this.compileModule(code, storeId, baseRealUrl, metric);
       }
 
-      if (compileCache) {
-        const compilePromise = this.compileModule(
-          code,
-          storeId,
-          baseRealUrl,
-          metric,
-        ).catch((error) => {
-          compileCache.delete(cacheKey);
-          throw error;
-        });
-        compileCache.set(cacheKey, compilePromise);
-        const output = await compilePromise;
-        compileCache.set(cacheKey, output);
-        return { ...output, storeId, realUrl: baseRealUrl };
-      }
-
-      return this.compileModule(code, storeId, baseRealUrl, metric);
+      const runtimeOutput = { ...output, storeId, realUrl: baseRealUrl };
+      return runtimeOutput;
     } finally {
       metric.totalMs = now() - metricStart;
       this.options.metrics?.({ ...metric });
@@ -501,6 +540,7 @@ export class Runtime {
     metric: RuntimeCompileMetric,
   ) {
     const transformStart = now();
+    const { transformModuleWithWasm } = await import('./wasm');
     const output = await transformModuleWithWasm(
       code,
       storeId,
@@ -508,12 +548,9 @@ export class Runtime {
     );
     metric.transformMs = now() - transformStart;
 
-    const dependencyStart = now();
-    await this.loadDependencies(this.toDependencyRequests(output, storeId, baseRealUrl));
-    metric.dependencyMs = now() - dependencyStart;
-
     return {
       code: output.code,
+      imports: output.imports,
       exports: output.exports,
       storeId,
       realUrl: baseRealUrl,
@@ -521,7 +558,7 @@ export class Runtime {
   }
 
   private toDependencyRequests(
-    output: WasmTransformResult,
+    output: Pick<CompiledModuleResource, 'imports'>,
     storeId: string,
     baseRealUrl: string,
   ) {
@@ -537,12 +574,21 @@ export class Runtime {
       .filter(Boolean) as Array<{ storeId: string; requestUrl: string }>;
   }
 
-  private loadJavaScript(url: string) {
+  private loadJavaScript(
+    url: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+    defaultContentType?: string,
+  ) {
     return new Promise<CacheValue<JavaScriptManager>>((resolve, reject) => {
       const run = () => {
         this.activeLoads++;
         this.loader
-          .load<JavaScriptManager>({ scope: this.options.scope, url })
+          .load<JavaScriptManager>({
+            scope: this.options.scope,
+            url,
+            crossOrigin,
+            defaultContentType,
+          })
           .then(resolve, reject)
           .finally(() => {
             this.activeLoads--;
@@ -558,43 +604,33 @@ export class Runtime {
     });
   }
 
-  private async loadDependencies(
-    deps: Array<{ storeId: string; requestUrl: string }>,
+  private getOrCreateLoad(
+    storeId: string,
+    requestUrl: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
   ) {
-    const results = await Promise.allSettled(
-      deps
-        .map(({ storeId, requestUrl }) =>
-          this.compileAndFetchCode(storeId, requestUrl),
-        )
-        .filter(Boolean) as Array<Promise<ModuleResource>>,
-    );
-    const rejected = results.find(
-      (result): result is PromiseRejectedResult => result.status === 'rejected',
-    );
+    const existing = this.loadRegistry[storeId];
+    if (existing) return existing;
 
-    if (rejected) throw rejected.reason;
-  }
-
-  private getOrCreateLoad(storeId: string, requestUrl: string) {
     if (this.resources[storeId]) {
       return {
         storeId,
         requestUrl,
-        resource: this.resources[storeId],
+        resource: this.resources[storeId] as CompiledModuleResource,
       };
     }
-
-    const existing = this.loadRegistry[storeId];
-    if (existing) return existing;
 
     const load: ModuleLoadRecord = (this.loadRegistry[storeId] = {
       storeId,
       requestUrl,
+      crossOrigin,
     });
 
     load.promise = this.fetchAndCompileLoad(load).catch((error) => {
-      delete this.loadRegistry[storeId];
-      delete this.resources[storeId];
+      if (this.loadRegistry[storeId] === load) {
+        delete this.loadRegistry[storeId];
+        delete this.resources[storeId];
+      }
       throw error;
     });
 
@@ -603,7 +639,10 @@ export class Runtime {
 
   private async fetchAndCompileLoad(load: ModuleLoadRecord) {
     const fetchStart = now();
-    const { resourceManager } = await this.loadJavaScript(load.requestUrl);
+    const { resourceManager } = await this.loadJavaScript(
+      load.requestUrl,
+      load.crossOrigin,
+    );
     const fetchMs = now() - fetchStart;
 
     if (!resourceManager) {
@@ -622,18 +661,101 @@ export class Runtime {
       fetchMs,
     });
     load.resource = output;
-    this.resources[load.storeId] = output;
     return output;
+  }
+
+  private getCompiledLoad(load: ModuleLoadRecord) {
+    if (load.resource) return Promise.resolve(load.resource);
+    if (load.promise) return load.promise;
+    return Promise.reject(new Error(`Module '${load.storeId}' not found`));
+  }
+
+  private async loadModuleGraph(entryLoad: ModuleLoadRecord) {
+    const visited = new Map<string, ModuleLoadRecord>();
+    const queue: ModuleLoadRecord[] = [];
+    let graphError: unknown;
+    let hasGraphError = false;
+
+    const enqueue = (load: ModuleLoadRecord) => {
+      if (visited.has(load.storeId)) return;
+      visited.set(load.storeId, load);
+      queue.push(load);
+    };
+
+    enqueue(entryLoad);
+
+    while (queue.length > 0) {
+      const batch = queue.splice(0);
+      const results = await Promise.allSettled(
+        batch.map((load) => this.getCompiledLoad(load)),
+      );
+
+      results.forEach((result, index) => {
+        if (result.status === 'rejected') {
+          if (!hasGraphError) {
+            graphError = result.reason;
+            hasGraphError = true;
+          }
+          return;
+        }
+
+        const load = batch[index];
+        load.resource = result.value;
+        try {
+          this.toDependencyRequests(
+            result.value,
+            load.storeId,
+            result.value.realUrl,
+          ).forEach(({ storeId, requestUrl }) => {
+            enqueue(
+              this.getOrCreateLoad(storeId, requestUrl, load.crossOrigin),
+            );
+          });
+        } catch (error) {
+          if (!hasGraphError) {
+            graphError = error;
+            hasGraphError = true;
+          }
+        }
+      });
+    }
+
+    if (hasGraphError) throw graphError;
+
+    visited.forEach((load, storeId) => {
+      this.resources[storeId] = load.resource!;
+    });
+    return entryLoad.resource!;
   }
 
   private compileAndFetchCode(
     storeId: string,
     url?: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
   ): void | Promise<ModuleResource> {
+    if (this.resources[storeId]) return;
     if (!url) url = storeId;
-    const load = this.getOrCreateLoad(storeId, url);
-    if (load.resource) return;
-    return load.promise;
+    const load = this.getOrCreateLoad(storeId, url, crossOrigin);
+    return this.loadModuleGraph(load);
+  }
+
+  async preloadByUrl(
+    storeId: string,
+    requestUrl?: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+  ) {
+    await this.compileAndFetchCode(
+      storeId,
+      requestUrl || storeId,
+      crossOrigin,
+    );
+  }
+
+  async preloadScript(
+    url: string,
+    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
+  ) {
+    await this.loadJavaScript(url, crossOrigin, 'text/javascript');
   }
 
   import(storeId: string) {
@@ -673,8 +795,39 @@ export class Runtime {
       const loadedModule = this.memoryModules[storeId];
       if (loadedModule) return loadedModule;
 
+      const entryLoad: ModuleLoadRecord = {
+        storeId,
+        requestUrl: metaUrl,
+        resource: output,
+      };
+      const previousLoad = this.loadRegistry[storeId];
+      const previousResource = this.resources[storeId];
+      this.loadRegistry[storeId] = entryLoad;
+      try {
+        await this.loadModuleGraph(entryLoad);
+      } catch (error) {
+        if (this.loadRegistry[storeId] === entryLoad) {
+          if (previousLoad) {
+            this.loadRegistry[storeId] = previousLoad;
+          } else {
+            delete this.loadRegistry[storeId];
+          }
+        }
+        if (previousResource) {
+          this.resources[storeId] = previousResource;
+        } else {
+          delete this.resources[storeId];
+        }
+        throw error;
+      }
+      if (this.loadRegistry[storeId] === entryLoad) {
+        delete this.loadRegistry[storeId];
+      }
+
+      const graphLoadedModule = this.memoryModules[storeId];
+      if (graphLoadedModule) return graphLoadedModule;
+
       const memoryModule = {};
-      this.resources[storeId] = output;
       this.memoryModules[storeId] = memoryModule;
 
       try {

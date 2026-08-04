@@ -20,18 +20,18 @@ describe('wasm transform', () => {
     expect(result.code).toContain(
       'const __m0__ = __GARFISH_IMPORT__("./dep.js");',
     );
-    expect(result.code).toContain(
-      'const def = (0, __GARFISH_DEFAULT_IMPORT__(__m0__));',
-    );
-    expect(result.code).toContain('const count = (0, __m0__.count);');
-    expect(result.code).toContain('const plus = (0, __m0__.inc);');
+    expect(result.code).not.toContain('const def =');
+    expect(result.code).not.toContain('const count =');
+    expect(result.code).not.toContain('const plus =');
     expect(result.code).toContain('const snapshot = (0, __m0__.count);');
     expect(result.code).toContain(
       'const bag = { count: (0, __m0__.count), plus: (0, __m0__.inc) };',
     );
     expect(result.code).toContain('"liveCount": () => (0, __m0__.count)');
     expect(result.code).toContain('"default": () => read');
-    expect(result.code).toContain('return (0, __m0__.inc)() +');
+    expect(result.code).toContain(
+      'return (0, __m0__.inc)() + (0, __GARFISH_DEFAULT_IMPORT__(__m0__))',
+    );
   });
 
   it('keeps shadowed locals separate from imported bindings', async () => {
