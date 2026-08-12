@@ -23,6 +23,11 @@ The plugin only handles scripts that Garfish already marks as module scripts.
 For Vite-style sub applications, keep using an HTML entry with
 `<script type="module">`.
 
+Each module is checked for the precompiled artifact header before execution.
+Precompiled modules bypass the browser transformer. When a plain ESM module is
+encountered, the package root lazily loads and reuses the wasm compiler for the
+runtime fallback, so fully precompiled applications do not load it.
+
 ## Build-time compilation
 
 The compiler entry can turn an emitted ESM module into a JavaScript artifact
