@@ -364,9 +364,9 @@ export class Runtime {
         return this.importModule(storeId, undefined, execCode);
       },
 
-      [GARFISH_DYNAMIC_IMPORT]: (moduleId: string) => {
+      [GARFISH_DYNAMIC_IMPORT]: async (moduleId: string) => {
         if (this.isExternalModule(moduleId)) {
-          return Promise.resolve(this.getModule(this.getExternalModule(moduleId)));
+          return this.getModule(this.getExternalModule(moduleId));
         }
         this.ensureImportMapForModule(moduleId);
         const storeId = this.resolveModuleUrl(output.storeId, moduleId);
@@ -672,6 +672,8 @@ export class Runtime {
 
   private async loadModuleGraph(entryLoad: ModuleLoadRecord) {
     const visited = new Map<string, ModuleLoadRecord>();
+    const importersByDependency = new Map<string, Set<string>>();
+    const failedStoreIds = new Set<string>();
     const queue: ModuleLoadRecord[] = [];
     let graphError: unknown;
     let hasGraphError = false;
@@ -691,7 +693,9 @@ export class Runtime {
       );
 
       results.forEach((result, index) => {
+        const load = batch[index];
         if (result.status === 'rejected') {
+          failedStoreIds.add(load.storeId);
           if (!hasGraphError) {
             graphError = result.reason;
             hasGraphError = true;
@@ -699,19 +703,23 @@ export class Runtime {
           return;
         }
 
-        const load = batch[index];
         load.resource = result.value;
         try {
-          this.toDependencyRequests(
+          const dependencies = this.toDependencyRequests(
             result.value,
             load.storeId,
             result.value.realUrl,
-          ).forEach(({ storeId, requestUrl }) => {
+          );
+          dependencies.forEach(({ storeId, requestUrl }) => {
+            const importers = importersByDependency.get(storeId) || new Set();
+            importers.add(load.storeId);
+            importersByDependency.set(storeId, importers);
             enqueue(
               this.getOrCreateLoad(storeId, requestUrl, load.crossOrigin),
             );
           });
         } catch (error) {
+          failedStoreIds.add(load.storeId);
           if (!hasGraphError) {
             graphError = error;
             hasGraphError = true;
@@ -720,11 +728,27 @@ export class Runtime {
       });
     }
 
-    if (hasGraphError) throw graphError;
+    // `resources` is also the graph-ready signal, so static importers of a
+    // failed load must stay blocked while independent successful subgraphs
+    // can be retained.
+    const blockedStoreIds = new Set(failedStoreIds);
+    const blockedQueue = [...failedStoreIds];
+    for (let index = 0; index < blockedQueue.length; index++) {
+      const storeId = blockedQueue[index];
+      importersByDependency.get(storeId)?.forEach((importerStoreId) => {
+        if (blockedStoreIds.has(importerStoreId)) return;
+        blockedStoreIds.add(importerStoreId);
+        blockedQueue.push(importerStoreId);
+      });
+    }
 
     visited.forEach((load, storeId) => {
-      this.resources[storeId] = load.resource!;
+      if (load.resource && !blockedStoreIds.has(storeId)) {
+        this.resources[storeId] = load.resource;
+      }
     });
+
+    if (hasGraphError) throw graphError;
     return entryLoad.resource!;
   }
 
@@ -762,15 +786,17 @@ export class Runtime {
     return this.importModule(storeId) as MemoryModule;
   }
 
-  importByUrl(
+  async importByUrl(
     storeId: string,
     requestUrl?: string,
     execCode?: RuntimeExecCode,
   ) {
-    const result = this.importModule(storeId, requestUrl || storeId, execCode);
-    return Promise.resolve(result).then((memoryModule) => {
-      return this.getModule(memoryModule);
-    });
+    const memoryModule = await this.importModule(
+      storeId,
+      requestUrl || storeId,
+      execCode,
+    );
+    return this.getModule(memoryModule);
   }
 
   async importByCode(
@@ -801,7 +827,6 @@ export class Runtime {
         resource: output,
       };
       const previousLoad = this.loadRegistry[storeId];
-      const previousResource = this.resources[storeId];
       this.loadRegistry[storeId] = entryLoad;
       try {
         await this.loadModuleGraph(entryLoad);
@@ -812,11 +837,6 @@ export class Runtime {
           } else {
             delete this.loadRegistry[storeId];
           }
-        }
-        if (previousResource) {
-          this.resources[storeId] = previousResource;
-        } else {
-          delete this.resources[storeId];
         }
         throw error;
       }
