@@ -1,5 +1,12 @@
 # garfish-wasm-esm-plugin
 
+## 0.2.1
+
+### Patch Changes
+
+- daf3459: Preserve complete successful module subgraphs when a sibling dependency fails,
+  while keeping failed static graphs rejected and dynamic imports promise-based.
+
 ## 0.2.0
 
 ### Minor Changes
