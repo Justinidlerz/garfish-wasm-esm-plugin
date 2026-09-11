@@ -62,6 +62,8 @@
     "example:build": "pnpm run build:wasm && vite build --config examples/vite/vite.config.ts",
     "example:dev": "pnpm run build:wasm && vite --config examples/vite/vite.config.ts",
     "example:preview": "vite preview --config examples/vite/vite.config.ts",
+    "example:performance": "pnpm run example:build && node examples/vite/performance/server.mjs",
+    "example:performance:serve": "node examples/vite/performance/server.mjs",
     "publish:beta": "pnpm run build && npm publish --tag beta",
     "release": "pnpm run build && npm publish",
     "test": "pnpm run test:rust && pnpm run test:js",

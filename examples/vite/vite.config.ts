@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath, URL } from 'node:url';
 import { defineConfig } from 'vite';
 import { garfishPrecompile } from '../../src/vite';
+import { performanceFixtures } from './performance/fixtures';
 
 const exampleRoot = fileURLToPath(new URL('.', import.meta.url));
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -9,13 +10,23 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 export default defineConfig({
   root: exampleRoot,
   plugins: [
+    performanceFixtures(
+      new Uint8Array(
+        readFileSync(
+          new URL('../../pkg/garfish_wasm_esm_plugin_bg.wasm', import.meta.url),
+        ),
+      ),
+    ),
     garfishPrecompile({
       copyAssets: false,
       htmlEntries: ['subapp.html'],
       wasm: new Uint8Array(
         readFileSync(
           fileURLToPath(
-            new URL('../../pkg/garfish_wasm_esm_plugin_bg.wasm', import.meta.url),
+            new URL(
+              '../../pkg/garfish_wasm_esm_plugin_bg.wasm',
+              import.meta.url,
+            ),
           ),
         ),
       ),
@@ -41,6 +52,12 @@ export default defineConfig({
       input: {
         host: fileURLToPath(new URL('./index.html', import.meta.url)),
         subapp: fileURLToPath(new URL('./subapp.html', import.meta.url)),
+        performance: fileURLToPath(
+          new URL('./performance.html', import.meta.url),
+        ),
+        performanceRun: fileURLToPath(
+          new URL('./performance-run.html', import.meta.url),
+        ),
       },
     },
   },

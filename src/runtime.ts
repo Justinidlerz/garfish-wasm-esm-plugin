@@ -21,7 +21,6 @@ import {
   type ModuleImportInfo,
 } from './compiled-module';
 import { createImportMeta, createModule, MemoryModule, Module } from './module';
-import type { GarfishEsModulePreloadCrossOrigin } from './preloads';
 
 const PACKAGE_VERSION = '__PACKAGE_VERSION__';
 const TRANSFORMER_VERSION = `garfish-wasm-esm-plugin@${PACKAGE_VERSION}:oxc-wasm`;
@@ -100,6 +99,28 @@ export interface RuntimeCompileMetric {
 
 export type RuntimeMetricsReporter = (metric: RuntimeCompileMetric) => void;
 
+export type DependencyScheduling = 'batch' | 'streaming';
+
+/** Diagnostic timestamps share the performance.now clock; load time includes Loader work. */
+export interface RuntimeLoadEvent {
+  type:
+    | 'load-queued'
+    | 'load-start'
+    | 'load-end'
+    | 'module-ready'
+    | 'dependency-expand'
+    | 'graph-start'
+    | 'graph-ready'
+    | 'graph-error';
+  storeId: string;
+  timestamp: number;
+  graphId?: number;
+  readyAt?: number;
+  activeLoads?: number;
+}
+
+export type RuntimeLoadObserver = (event: RuntimeLoadEvent) => void;
+
 export interface RuntimeCompileCache {
   get(key: string): ModuleResource | Promise<ModuleResource> | undefined;
   set(key: string, value: ModuleResource | Promise<ModuleResource>): void;
@@ -131,9 +152,9 @@ export type RuntimeExecCode = (
 interface ModuleLoadRecord {
   storeId: string;
   requestUrl: string;
-  crossOrigin?: GarfishEsModulePreloadCrossOrigin;
   promise?: Promise<CompiledModuleResource>;
   resource?: CompiledModuleResource;
+  readyAt?: number;
 }
 
 export interface RuntimeImportMap {
@@ -153,6 +174,9 @@ export interface RuntimeOptions {
   compileCache?: boolean | RuntimeCompileCache;
   runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
+  /** Opt in to completion-driven expansion; the compatibility default is batch. */
+  dependencyScheduling?: DependencyScheduling;
+  loadObserver?: RuntimeLoadObserver;
   importMaps?: Array<RuntimeImportMap>;
   importMapUrl?: string | URL;
   wasm?: WasmInitInput;
@@ -205,6 +229,7 @@ export class Runtime {
   private codeImportRegistry: Record<string, Promise<MemoryModule>> = {};
   private loadRegistry: Record<string, ModuleLoadRecord> = {};
   private activeLoads = 0;
+  private nextGraphId = 0;
   private loadQueue: Array<() => void> = [];
   public loader: Loader;
   public options: RuntimeOptions;
@@ -229,9 +254,28 @@ export class Runtime {
       preserveOpaqueOption(this.options, options, 'importMaps');
       preserveOpaqueOption(this.options, options, 'importMapUrl');
       preserveOpaqueOption(this.options, options, 'metrics');
+      preserveOpaqueOption(this.options, options, 'loadObserver');
       preserveOpaqueOption(this.options, options, 'wasm');
     }
     this.loader = new Loader(this.options.loaderOptions);
+  }
+
+  private observe(event: Omit<RuntimeLoadEvent, 'timestamp'>) {
+    if (!this.options.loadObserver) return;
+    try {
+      const result: unknown = this.options.loadObserver({
+        ...event,
+        timestamp: now(),
+      });
+      if (
+        result &&
+        typeof (result as PromiseLike<unknown>).then === 'function'
+      ) {
+        void Promise.resolve(result).catch(() => undefined);
+      }
+    } catch {
+      // Diagnostics must not alter module loading or evaluation.
+    }
   }
 
   private getImportMapUrl() {
@@ -286,7 +330,12 @@ export class Runtime {
       executor(output, provider);
     } else {
       const evalStart = now();
-      evalWithEnv(`\n${output.code}\n//${output.storeId}\n`, provider, undefined, true);
+      evalWithEnv(
+        `\n${output.code}\n//${output.storeId}\n`,
+        provider,
+        undefined,
+        true,
+      );
       this.options.metrics?.({
         storeId: output.storeId,
         realUrl: output.realUrl,
@@ -433,9 +482,7 @@ export class Runtime {
     }
     if (matcher instanceof Set) {
       if (matcher.has(moduleId)) return true;
-      return [...matcher].some((item) =>
-        isExternalPrefixMatch(moduleId, item),
-      );
+      return [...matcher].some((item) => isExternalPrefixMatch(moduleId, item));
     }
     return matcher(moduleId);
   }
@@ -576,20 +623,32 @@ export class Runtime {
 
   private loadJavaScript(
     url: string,
-    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
-    defaultContentType?: string,
+    storeId = url,
   ) {
+    this.observe({ type: 'load-queued', storeId });
     return new Promise<CacheValue<JavaScriptManager>>((resolve, reject) => {
       const run = () => {
         this.activeLoads++;
+        this.observe({
+          type: 'load-start',
+          storeId,
+          activeLoads: this.activeLoads,
+        });
         this.loader
           .load<JavaScriptManager>({
             scope: this.options.scope,
             url,
-            crossOrigin,
-            defaultContentType,
           })
-          .then(resolve, reject)
+          .then(
+            (value) => {
+              this.observe({ type: 'load-end', storeId });
+              resolve(value);
+            },
+            (error) => {
+              this.observe({ type: 'load-end', storeId });
+              reject(error);
+            },
+          )
           .finally(() => {
             this.activeLoads--;
             this.loadQueue.shift()?.();
@@ -607,7 +666,6 @@ export class Runtime {
   private getOrCreateLoad(
     storeId: string,
     requestUrl: string,
-    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
   ) {
     const existing = this.loadRegistry[storeId];
     if (existing) return existing;
@@ -623,7 +681,6 @@ export class Runtime {
     const load: ModuleLoadRecord = (this.loadRegistry[storeId] = {
       storeId,
       requestUrl,
-      crossOrigin,
     });
 
     load.promise = this.fetchAndCompileLoad(load).catch((error) => {
@@ -641,7 +698,7 @@ export class Runtime {
     const fetchStart = now();
     const { resourceManager } = await this.loadJavaScript(
       load.requestUrl,
-      load.crossOrigin,
+      load.storeId,
     );
     const fetchMs = now() - fetchStart;
 
@@ -661,6 +718,8 @@ export class Runtime {
       fetchMs,
     });
     load.resource = output;
+    load.readyAt = now();
+    this.observe({ type: 'module-ready', storeId: load.storeId });
     return output;
   }
 
@@ -671,115 +730,138 @@ export class Runtime {
   }
 
   private async loadModuleGraph(entryLoad: ModuleLoadRecord) {
+    const graphId = ++this.nextGraphId;
+    const graphStart = now();
+    this.observe({ type: 'graph-start', storeId: entryLoad.storeId, graphId });
     const visited = new Map<string, ModuleLoadRecord>();
     const importersByDependency = new Map<string, Set<string>>();
-    const failedStoreIds = new Set<string>();
+    const failures = new Map<string, unknown>();
+    const edges = new Map<string, string[]>();
     const queue: ModuleLoadRecord[] = [];
-    let graphError: unknown;
-    let hasGraphError = false;
+    const streaming = this.options.dependencyScheduling === 'streaming';
+    let pending = 0;
+    let finish!: () => void;
+    const drained = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+
+    const expand = (load: ModuleLoadRecord, output: CompiledModuleResource) => {
+      load.resource = output;
+      this.observe({
+        type: 'dependency-expand',
+        storeId: load.storeId,
+        graphId,
+        readyAt: Math.max(load.readyAt ?? graphStart, graphStart),
+      });
+      const dependencies = this.toDependencyRequests(
+        output,
+        load.storeId,
+        output.realUrl,
+      );
+      edges.set(
+        load.storeId,
+        dependencies.map(({ storeId }) => storeId),
+      );
+      dependencies.forEach(({ storeId, requestUrl }) => {
+        const importers =
+          importersByDependency.get(storeId) || new Set<string>();
+        importers.add(load.storeId);
+        importersByDependency.set(storeId, importers);
+        // Retain every edge, but do not retry a failed record within this graph.
+        if (!visited.has(storeId)) {
+          enqueue(this.getOrCreateLoad(storeId, requestUrl));
+        }
+      });
+    };
 
     const enqueue = (load: ModuleLoadRecord) => {
       if (visited.has(load.storeId)) return;
       visited.set(load.storeId, load);
-      queue.push(load);
+      if (!streaming) {
+        queue.push(load);
+        return;
+      }
+      pending++;
+      void this.getCompiledLoad(load)
+        .then((output) => expand(load, output))
+        .catch((error) => {
+          failures.set(load.storeId, error);
+        })
+        .finally(() => {
+          if (--pending === 0) finish();
+        });
     };
 
     enqueue(entryLoad);
-
-    while (queue.length > 0) {
+    while (!streaming && queue.length > 0) {
       const batch = queue.splice(0);
       const results = await Promise.allSettled(
         batch.map((load) => this.getCompiledLoad(load)),
       );
-
       results.forEach((result, index) => {
         const load = batch[index];
         if (result.status === 'rejected') {
-          failedStoreIds.add(load.storeId);
-          if (!hasGraphError) {
-            graphError = result.reason;
-            hasGraphError = true;
-          }
+          failures.set(load.storeId, result.reason);
           return;
         }
-
-        load.resource = result.value;
         try {
-          const dependencies = this.toDependencyRequests(
-            result.value,
-            load.storeId,
-            result.value.realUrl,
-          );
-          dependencies.forEach(({ storeId, requestUrl }) => {
-            const importers = importersByDependency.get(storeId) || new Set();
-            importers.add(load.storeId);
-            importersByDependency.set(storeId, importers);
-            enqueue(
-              this.getOrCreateLoad(storeId, requestUrl, load.crossOrigin),
-            );
-          });
+          expand(load, result.value);
         } catch (error) {
-          failedStoreIds.add(load.storeId);
-          if (!hasGraphError) {
-            graphError = error;
-            hasGraphError = true;
-          }
+          failures.set(load.storeId, error);
         }
       });
     }
+    if (streaming) await drained;
 
-    // `resources` is also the graph-ready signal, so static importers of a
-    // failed load must stay blocked while independent successful subgraphs
-    // can be retained.
-    const blockedStoreIds = new Set(failedStoreIds);
-    const blockedQueue = [...failedStoreIds];
+    // resources is the graph-ready signal. Preserve the PR-8 failure closure:
+    // independent successful subgraphs survive, failed static importers do not.
+    const blockedStoreIds = new Set(failures.keys());
+    const blockedQueue = [...blockedStoreIds];
     for (let index = 0; index < blockedQueue.length; index++) {
-      const storeId = blockedQueue[index];
-      importersByDependency.get(storeId)?.forEach((importerStoreId) => {
-        if (blockedStoreIds.has(importerStoreId)) return;
-        blockedStoreIds.add(importerStoreId);
-        blockedQueue.push(importerStoreId);
+      importersByDependency.get(blockedQueue[index])?.forEach((storeId) => {
+        if (blockedStoreIds.has(storeId)) return;
+        blockedStoreIds.add(storeId);
+        blockedQueue.push(storeId);
       });
     }
-
     visited.forEach((load, storeId) => {
       if (load.resource && !blockedStoreIds.has(storeId)) {
         this.resources[storeId] = load.resource;
       }
     });
-
-    if (hasGraphError) throw graphError;
+    if (failures.size) {
+      this.observe({
+        type: 'graph-error',
+        storeId: entryLoad.storeId,
+        graphId,
+      });
+      // Preserve batch's breadth-first/declaration-order error priority,
+      // independent of network completion order.
+      const ordered = [entryLoad.storeId];
+      const seen = new Set(ordered);
+      for (let index = 0; index < ordered.length; index++) {
+        const storeId = ordered[index];
+        if (failures.has(storeId)) throw failures.get(storeId);
+        for (const dependency of edges.get(storeId) || []) {
+          if (!seen.has(dependency)) {
+            seen.add(dependency);
+            ordered.push(dependency);
+          }
+        }
+      }
+    }
+    this.observe({ type: 'graph-ready', storeId: entryLoad.storeId, graphId });
     return entryLoad.resource!;
   }
 
   private compileAndFetchCode(
     storeId: string,
     url?: string,
-    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
   ): void | Promise<ModuleResource> {
     if (this.resources[storeId]) return;
     if (!url) url = storeId;
-    const load = this.getOrCreateLoad(storeId, url, crossOrigin);
+    const load = this.getOrCreateLoad(storeId, url);
     return this.loadModuleGraph(load);
-  }
-
-  async preloadByUrl(
-    storeId: string,
-    requestUrl?: string,
-    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
-  ) {
-    await this.compileAndFetchCode(
-      storeId,
-      requestUrl || storeId,
-      crossOrigin,
-    );
-  }
-
-  async preloadScript(
-    url: string,
-    crossOrigin?: GarfishEsModulePreloadCrossOrigin,
-  ) {
-    await this.loadJavaScript(url, crossOrigin, 'text/javascript');
   }
 
   import(storeId: string) {

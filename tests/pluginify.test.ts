@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { GarfishEsModule } from '../src/pluginify';
+import { Runtime } from '../src/runtime';
 import { getWasmBytes } from './wasm';
 
 function createSandbox() {
@@ -10,7 +11,7 @@ function createSandbox() {
         afterInvoke: { emit: vi.fn() },
       },
     },
-    createExecParams: vi.fn(() => ({})),
+    createExecParams: vi.fn((_codeRef: unknown, _env: Record<string, unknown>) => ({})),
     execScript: vi.fn(),
     processExecError: vi.fn(),
   };
@@ -57,6 +58,43 @@ function runQueuedTask(task: (next: () => void) => void | Promise<void>) {
 }
 
 describe('GarfishEsModule plugin', () => {
+  it('leaves preload descriptors to Garfish without reading or fetching them', () => {
+    const load = vi.fn();
+    const plugin = GarfishEsModule()({ externals: {}, loader: { load } } as any);
+    const { app } = createApp();
+    const readPreloads = vi.fn(() => {
+      throw new Error('The ESM plugin must not consume Garfish resource hints');
+    });
+    Object.defineProperty(app.entryManager, Symbol.for('garfish.es-module.preloads.v1'), {
+      get: readPreloads,
+    });
+    plugin.afterLoad?.({ name: app.name, entry: app.entryManager.url } as any, app as any);
+    expect(readPreloads).not.toHaveBeenCalled();
+    expect(load).not.toHaveBeenCalled();
+  });
+
+  it('forwards scheduling and the original observer to its runtime', async () => {
+    const loadObserver = vi.fn();
+    const plugin = GarfishEsModule({ dependencyScheduling: 'streaming', loadObserver })({
+      externals: {}, loader: {},
+    } as any);
+    const { app, tasks } = createApp();
+    let usedRuntime: Runtime | undefined;
+    const imported = vi.spyOn(Runtime.prototype, 'importByCode').mockImplementation(function (this: Runtime) {
+      usedRuntime = this;
+      return Promise.resolve(undefined);
+    });
+    try {
+      plugin.afterLoad?.({ name: app.name, entry: app.entryManager.url } as any, app as any);
+      app.runCode('export const answer = 42;', {}, 'https://example.test/entry.js', { isInline: true, isModule: true });
+      await runQueuedTask(tasks[0]);
+      expect(usedRuntime!.options.dependencyScheduling).toBe('streaming');
+      expect(usedRuntime!.options.loadObserver).toBe(loadObserver);
+    } finally {
+      imported.mockRestore();
+    }
+  });
+
   it('skips excluded apps without replacing runCode', () => {
     const plugin = GarfishEsModule({ excludes: ['subapp'] })({
       externals: {},
