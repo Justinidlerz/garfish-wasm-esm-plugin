@@ -194,12 +194,13 @@ describe('Runtime', () => {
     expect(second.value).toBe(1);
   });
 
-  it('propagates per-call executors to static and dynamic dependencies', async () => {
+  it.each(['batch', 'streaming'] as const)('propagates per-call executors to static and dynamic dependencies in %s mode', async (dependencyScheduling) => {
     const executedStoreIds: string[] = [];
     const runtime = new Runtime({
       scope: 'test',
       wasm: getWasmBytes(),
       compileCache: false,
+      dependencyScheduling,
     });
     const load = vi.fn(async ({ url }: { url: string }) => ({
       resourceManager: {

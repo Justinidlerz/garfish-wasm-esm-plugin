@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>ESM scheduling experiment</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">GARFISH · LOADING LAB</p>
+      <h1>Measure the wait between modules.</h1>
+      <p>
+        Five dependency layers, shared services, a live-binding cycle and a
+        dynamic import. Same artifacts and seeded server delays for both
+        schedulers.
+      </p>
+      <div class="controls">
+        <label
+          >Profile
+          <select id="profile">
+            <option value="mixed">Mixed latency</option>
+            <option value="uniform">Uniform latency</option>
+            <option value="local">No added latency</option>
+          </select></label
+        ><label
+          >Pairs
+          <input id="pairs" type="number" min="1" max="20" value="8" /></label
+        ><label
+          >External conditions
+          <input id="condition" value="CPU 1x" style="width: 150px" /></label
+        ><button id="run">Run comparison</button
+        ><button id="download" disabled>Download raw results</button>
+      </div>
+      <p id="progress">
+        Ready. Each trial uses a fresh document and uncached workload resources.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Condition</th>
+            <th>Profile</th>
+            <th>Mode</th>
+            <th>Runs</th>
+            <th>Graph median</th>
+            <th>App ready median</th>
+            <th>Ready P75</th>
+          </tr>
+        </thead>
+        <tbody id="results"></tbody>
+      </table>
+      <p class="note">
+        Graph time and app-ready time are wall-clock intervals. Summed module
+        waits are diagnostic work, not total page latency. This is a synthetic
+        HTTP/1.1 experiment, not a Seller Center LCP claim.
+      </p>
+      <div id="frame-host"></div>
+    </main>
+    <script type="module" src="/src/performance.ts"></script>
+  </body>
+</html>
