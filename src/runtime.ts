@@ -226,6 +226,8 @@ export class Runtime {
   private modules = new WeakMap<MemoryModule, Module>();
   private importMap?: ImportMap;
   private memoryModules: Record<string, MemoryModule> = {};
+  private executionErrors = new Map<string, unknown>();
+  private moduleImporters = new Map<string, Set<string>>();
   private codeImportRegistry: Record<string, Promise<MemoryModule>> = {};
   private loadRegistry: Record<string, ModuleLoadRecord> = {};
   private activeLoads = 0;
@@ -346,14 +348,47 @@ export class Runtime {
     }
   }
 
+  private throwIfExecutionFailed(storeId: string) {
+    if (this.executionErrors.has(storeId)) {
+      throw this.executionErrors.get(storeId);
+    }
+  }
+
+  private invalidateExecution(storeId: string, error: unknown) {
+    const pending = [storeId];
+    for (let index = 0; index < pending.length; index++) {
+      const failedId = pending[index];
+      if (this.executionErrors.has(failedId)) continue;
+      this.executionErrors.set(failedId, error);
+
+      // Keep compiled metadata available to other loading graphs, but never
+      // expose a namespace from a failed evaluation (including its cycle).
+      const resource = this.resources[failedId];
+      if (resource) {
+        this.loadRegistry[failedId] = {
+          storeId: failedId,
+          requestUrl: resource.realUrl,
+          resource: resource as CompiledModuleResource,
+        };
+      }
+      delete this.memoryModules[failedId];
+      delete this.resources[failedId];
+      this.moduleImporters.get(failedId)?.forEach((importer) => {
+        pending.push(importer);
+      });
+    }
+  }
+
   private importModule(
     storeId: string,
     requestUrl?: string,
     execCode?: RuntimeExecCode,
   ): MemoryModule | Promise<MemoryModule> {
+    this.throwIfExecutionFailed(storeId);
     let memoryModule = this.memoryModules[storeId];
     if (!memoryModule) {
       const get = () => {
+        this.throwIfExecutionFailed(storeId);
         memoryModule = this.memoryModules[storeId];
         if (memoryModule) return memoryModule;
 
@@ -365,9 +400,7 @@ export class Runtime {
         try {
           this.execCode(output, memoryModule, execCode);
         } catch (error) {
-          delete this.memoryModules[storeId];
-          delete this.resources[storeId];
-          delete this.loadRegistry[storeId];
+          this.invalidateExecution(storeId, error);
           throw error;
         }
         return memoryModule;
@@ -410,6 +443,9 @@ export class Runtime {
           return this.getExternalModule(moduleId);
         }
         const storeId = this.resolveModuleUrl(output.storeId, moduleId);
+        const importers = this.moduleImporters.get(storeId) || new Set<string>();
+        importers.add(output.storeId);
+        this.moduleImporters.set(storeId, importers);
         return this.importModule(storeId, undefined, execCode);
       },
 
@@ -825,7 +861,11 @@ export class Runtime {
       });
     }
     visited.forEach((load, storeId) => {
-      if (load.resource && !blockedStoreIds.has(storeId)) {
+      if (
+        load.resource &&
+        !blockedStoreIds.has(storeId) &&
+        !this.executionErrors.has(storeId)
+      ) {
         this.resources[storeId] = load.resource;
       }
     });
@@ -878,6 +918,7 @@ export class Runtime {
       requestUrl || storeId,
       execCode,
     );
+    this.throwIfExecutionFailed(storeId);
     return this.getModule(memoryModule);
   }
 
@@ -887,19 +928,24 @@ export class Runtime {
     metaUrl?: string,
     execCode?: RuntimeExecCode,
   ) {
+    this.throwIfExecutionFailed(storeId);
     const existingModule = this.memoryModules[storeId];
     if (existingModule) {
+      await Promise.resolve();
+      this.throwIfExecutionFailed(storeId);
       return this.getModule(existingModule);
     }
     const inFlightModule = this.codeImportRegistry[storeId];
     if (inFlightModule) {
       const memoryModule = await inFlightModule;
+      this.throwIfExecutionFailed(storeId);
       return this.getModule(memoryModule);
     }
 
     if (!metaUrl) metaUrl = storeId;
     const modulePromise = (async () => {
       const output = await this.analysisModule(code, storeId, metaUrl);
+      this.throwIfExecutionFailed(storeId);
       const loadedModule = this.memoryModules[storeId];
       if (loadedModule) return loadedModule;
 
@@ -926,22 +972,7 @@ export class Runtime {
         delete this.loadRegistry[storeId];
       }
 
-      const graphLoadedModule = this.memoryModules[storeId];
-      if (graphLoadedModule) return graphLoadedModule;
-
-      const memoryModule = {};
-      this.memoryModules[storeId] = memoryModule;
-
-      try {
-        this.execCode(output, memoryModule, execCode);
-      } catch (error) {
-        delete this.memoryModules[storeId];
-        delete this.resources[storeId];
-        delete this.loadRegistry[storeId];
-        throw error;
-      }
-
-      return memoryModule;
+      return this.importModule(storeId, undefined, execCode) as MemoryModule;
     })();
 
     this.codeImportRegistry[storeId] = modulePromise;
@@ -950,6 +981,7 @@ export class Runtime {
         delete this.codeImportRegistry[storeId];
       }
     });
+    this.throwIfExecutionFailed(storeId);
     return this.getModule(memoryModule);
   }
 }
