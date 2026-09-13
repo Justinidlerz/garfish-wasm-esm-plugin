@@ -1,5 +1,15 @@
 # garfish-wasm-esm-plugin
 
+## 0.3.0
+
+### Minor Changes
+
+- a904864: Remove plugin-owned preload, prefetch, and modulepreload handling so resource hints remain under Garfish's control. Remove Runtime.preloadByUrl, Runtime.preloadScript, GARFISH_ES_MODULE_PRELOADS_SYMBOL, and the GarfishEsModulePreload types. Consumers of these APIs should use Garfish's resource loading facilities instead.
+
+### Patch Changes
+
+- a904864: Add opt-in completion-driven dependency scheduling and isolated load diagnostics, preserving the batch default, request limits, and PR-8 failed-subgraph protection. Add a reproducible browser performance example comparing both schedulers on the same multi-layer module graph.
+
 ## 0.2.1
 
 ### Patch Changes
