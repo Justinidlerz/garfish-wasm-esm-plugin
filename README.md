@@ -75,6 +75,14 @@ always bypass wasm transformation. When the option is `true`, a plain ESM
 module can still fall back to browser compilation; when it is `false`, loading
 a plain ESM module fails with an explicit error.
 
+Module evaluation failures are retained for the lifetime of a `Runtime`.
+Repeated imports rethrow the original value, including its stack and cause,
+and failed module instances and their static importers are invalidated.
+Successful independent dependencies remain reusable. Download and compilation
+failures retain their existing retry behavior; evaluation can be retried in a
+new `Runtime`. Clearing the shared compilation cache does not reset evaluation
+state, and cached Garfish apps keep the state of their existing runtime.
+
 ### Vite plugin
 
 The Vite entry keeps the original ESM output and emits a precompiled Garfish
@@ -227,6 +235,12 @@ The workflow also updates a repository PR comment with Codecov report links and
 the latest benchmark table.
 
 ## Benchmark
+
+Run `pnpm benchmark:browser` to compare native ESM execution with this plugin's
+precompiled artifacts in an existing browser. It measures import-to-ready and
+instrumented module-body time with paired trials, warmups, correctness checks,
+median/P75 summaries and JSON export. Network preparation and precompilation are
+outside the timed interval. See the [browser benchmark guide](benchmarks/browser/README.md).
 
 ```sh
 pnpm benchmark
