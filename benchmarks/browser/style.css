@@ -1,0 +1,23 @@
+#condition {
+  width: 190px;
+}
+.table-scroll {
+  overflow-x: auto;
+}
+table {
+  min-width: 920px;
+}
+td:not(:first-child) {
+  white-space: nowrap;
+}
+#frame-host iframe {
+  height: 70px;
+  background: white;
+  margin-top: 20px;
+}
+details {
+  margin: 20px 0;
+}
+summary {
+  cursor: pointer;
+}

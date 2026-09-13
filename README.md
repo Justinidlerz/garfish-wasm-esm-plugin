@@ -236,6 +236,12 @@ the latest benchmark table.
 
 ## Benchmark
 
+Run `pnpm benchmark:browser` to compare native ESM execution with this plugin's
+precompiled artifacts in an existing browser. It measures import-to-ready and
+instrumented module-body time with paired trials, warmups, correctness checks,
+median/P75 summaries and JSON export. Network preparation and precompilation are
+outside the timed interval. See the [browser benchmark guide](benchmarks/browser/README.md).
+
 ```sh
 pnpm benchmark
 pnpm benchmark:update
