@@ -176,6 +176,8 @@ export interface RuntimeOptions {
   metrics?: RuntimeMetricsReporter;
   /** Opt in to completion-driven expansion; the compatibility default is batch. */
   dependencyScheduling?: DependencyScheduling;
+  /** Limit concurrent Loader calls per Runtime to 24. Defaults to true. */
+  limitConcurrency?: boolean;
   loadObserver?: RuntimeLoadObserver;
   importMaps?: Array<RuntimeImportMap>;
   importMapUrl?: string | URL;
@@ -655,7 +657,10 @@ export class Runtime {
           });
       };
 
-      if (this.activeLoads < MAX_CONCURRENT_LOADS) {
+      if (
+        this.options.limitConcurrency === false ||
+        this.activeLoads < MAX_CONCURRENT_LOADS
+      ) {
         run();
       } else {
         this.loadQueue.push(run);
