@@ -19,6 +19,8 @@ export interface Options {
   runtimeCompile?: boolean;
   metrics?: RuntimeMetricsReporter;
   dependencyScheduling?: DependencyScheduling;
+  /** Limit concurrent Loader calls per subapp Runtime to 24. Defaults to true. */
+  limitConcurrency?: boolean;
   loadObserver?: RuntimeLoadObserver;
   garfishExternals?: RuntimeExternalMatcher;
   wasm?: WasmInitInput;
@@ -158,6 +160,7 @@ export function GarfishEsModule(options: Options = {}) {
             runtimeCompile: options.runtimeCompile,
             metrics: options.metrics,
             dependencyScheduling: options.dependencyScheduling,
+            limitConcurrency: options.limitConcurrency,
             loadObserver: options.loadObserver,
             wasm: options.wasm,
             garfishExternals: Garfish.externals,
