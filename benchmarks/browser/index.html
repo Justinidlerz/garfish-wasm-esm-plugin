@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Native ESM vs precompiled execution</title>
+  </head>
+  <body>
+    <main>
+      <p class="eyebrow">GARFISH · BROWSER BENCHMARK</p>
+      <h1>Native ESM vs precompiled execution.</h1>
+      <p>
+        Compare the same module loaded by native <code>import()</code> and the
+        plugin Runtime. Sources are prepared in memory before timing.
+        Precompilation happens during the build.
+      </p>
+      <div class="controls">
+        <label
+          >Workload<select id="fixture">
+            <option value="all">All sizes</option>
+          </select></label
+        >
+        <label
+          >Measured pairs<input
+            id="pairs"
+            type="number"
+            min="1"
+            max="100"
+            value="20"
+        /></label>
+        <label
+          >Conditions<input id="condition" value="No external throttling"
+        /></label>
+        <button id="run" disabled>Run comparison</button>
+        <button id="download" disabled>Download JSON</button>
+      </div>
+      <p id="progress" role="status">Loading build information…</p>
+      <p id="build" class="note"></p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Workload / pairs</th>
+              <th>Native ready<br />median / P75</th>
+              <th>Precompiled ready<br />median / P75</th>
+              <th>Ratio<br />compiled ÷ native</th>
+              <th>Paired overhead<br />median</th>
+              <th>Body median<br />native / compiled</th>
+            </tr>
+          </thead>
+          <tbody id="results">
+            <tr>
+              <td colspan="6">Run a comparison to collect measurements.</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="note">
+        All times are milliseconds. A ratio above 1 means precompiled was
+        slower. Ready time includes parsing, linking or Runtime setup inside the
+        import, evaluation and promise completion. Body time covers only the
+        shared source's instrumented top-level statements; it excludes parsing
+        and some module bookkeeping.
+      </p>
+      <p class="note">
+        Each sample uses a fresh document, Blob URL or Runtime. Two warmup pairs
+        per size are excluded. Keep this tab in the foreground. This measures
+        module execution, with no network transfer, build-time compilation,
+        Garfish sandbox lifecycle or application rendering inside the timed
+        interval.
+      </p>
+      <details>
+        <summary>Workloads and reproducibility</summary>
+        <p id="workloads"></p>
+        <p class="note">
+          Deterministic product data, a grouped index, exported functions, and
+          top-level aggregation. Both variants must pass checksum, export,
+          live-binding and execute-once checks. JSON retains warmups, all
+          timings, build hashes and browser information. Conditions is a label
+          only; it does not configure DevTools throttling.
+        </p>
+      </details>
+      <div id="frame-host"></div>
+    </main>
+    <script type="module" src="./index.ts"></script>
+  </body>
+</html>

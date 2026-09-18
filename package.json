@@ -72,6 +72,9 @@
     "test:coverage": "pnpm run build:wasm && vitest run --coverage",
     "test:watch": "vitest",
     "benchmark": "pnpm run build:wasm && node scripts/benchmark-transform.mjs",
+    "benchmark:browser": "pnpm run benchmark:browser:build && pnpm run benchmark:browser:serve",
+    "benchmark:browser:build": "pnpm run build:wasm && vite build --config benchmarks/browser/vite.config.ts",
+    "benchmark:browser:serve": "node benchmarks/browser/server.mjs",
     "benchmark:update": "pnpm run build:wasm && node scripts/benchmark-transform.mjs --update-readme --output benchmarks/transform.md",
     "benchmark:update-readme": "pnpm run benchmark:update",
     "typecheck": "tsc -p tsconfig.lib.json --noEmit"

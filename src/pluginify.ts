@@ -82,7 +82,7 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
 
   const originalAdd = queue.add.bind(queue);
   const originalAwaitCompletion = queue.awaitCompletion?.bind(queue);
-  let queueError: unknown;
+  let queueError: { value: unknown } | undefined;
 
   queue.add = (task: QueueTask) => {
     originalAdd((next) => {
@@ -98,12 +98,12 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
         if (isPromiseLike(result)) {
           result
             .catch((error) => {
-              queueError = error;
+              queueError ||= { value: error };
             })
             .finally(release);
         }
       } catch (error) {
-        queueError = error;
+        queueError ||= { value: error };
         release();
       }
     });
@@ -115,7 +115,7 @@ const patchPromiseAwareQueue = (queue?: QueueLike) => {
       if (queueError) {
         const error = queueError;
         queueError = undefined;
-        throw error;
+        throw error.value;
       }
     };
   }
@@ -192,13 +192,13 @@ export function GarfishEsModule(options: Options = {}) {
                 );
 
                 const evalStart = now();
-                let execError: unknown;
+                let execError: { value: unknown } | undefined;
                 try {
                   const params = sandbox?.createExecParams(codeRef, env);
                   const evalCode = `${codeRef.code}\n//${output.storeId}`;
                   evalWithEnv(evalCode, params || {}, undefined, false);
                 } catch (e) {
-                  execError = e;
+                  execError = { value: e };
                   sandbox?.processExecError(e, url, env, execOptions);
                 } finally {
                   runtime.options.metrics?.({
@@ -218,7 +218,7 @@ export function GarfishEsModule(options: Options = {}) {
                 );
 
                 if (execError) {
-                  throw execError;
+                  throw execError.value;
                 }
               };
 
