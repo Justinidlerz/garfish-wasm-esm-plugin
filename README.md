@@ -23,6 +23,23 @@ The plugin only handles scripts that Garfish already marks as module scripts.
 For Vite-style sub applications, keep using an HTML entry with
 `<script type="module">`.
 
+### Module load concurrency
+
+```ts
+// Default: at most 24 concurrent loads per Runtime.
+GarfishEsModule({ limitConcurrency: true });
+
+// Start loads without the Runtime concurrency queue delaying them.
+GarfishEsModule({ limitConcurrency: false });
+```
+
+`limitConcurrency` defaults to `true` and also works with `new Runtime(...)`.
+The limit applies to concurrent `Loader.load()` calls per subapp
+Runtime in both `batch` and `streaming` scheduling modes, including cache reads.
+It does not limit compilation or evaluation concurrency. Disabling it removes
+only this Runtime limit; dependency scheduling and browser/Loader behavior
+still apply.
+
 ## Build-time compilation
 
 The compiler entry can turn an emitted ESM module into a JavaScript artifact
